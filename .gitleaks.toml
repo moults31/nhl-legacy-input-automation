@@ -1,0 +1,4 @@
+title = "nhl-legacy-input-automation gitleaks config"
+
+[allowlist]
+description = "Global allowlist"

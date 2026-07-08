@@ -1,9 +1,14 @@
 # NHL Legacy Input Automation
 
+[![CI](https://github.com/moults31/nhl-legacy-input-automation/actions/workflows/ci.yml/badge.svg)](https://github.com/moults31/nhl-legacy-input-automation/actions/workflows/ci.yml)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
+[![Audit](https://github.com/moults31/nhl-legacy-input-automation/actions/workflows/audit.yml/badge.svg)](https://github.com/moults31/nhl-legacy-input-automation/actions/workflows/audit.yml)
+
 Virtual Xbox controller input automation for NHL Legacy Edition.
 
-Creates a virtual Xbox One controller via Linux `uinput` and replays user-provided
-scripts (written in [Rhai](https://rhai.rs)) against it.
+Creates a virtual Xbox One controller via the Linux `uinput` kernel interface and replays user-provided scripts (written in [Rhai](https://rhai.rs)) against it.
+
+> **Warning:** the Rust implementation in this repository was written entirely by AI. See [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
 
 ## Quickstart
 
