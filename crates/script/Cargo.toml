@@ -1,0 +1,12 @@
+[package]
+name = "nhl-script"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nhl-controller = { path = "../controller" }
+nhl-observer = { path = "../observer" }
+anyhow = "1"
+rhai = "1"

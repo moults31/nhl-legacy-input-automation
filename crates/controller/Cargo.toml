@@ -1,0 +1,11 @@
+[package]
+name = "nhl-controller"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+evdev = "0.13"
+thiserror = "2"
+tracing = "0.1"
