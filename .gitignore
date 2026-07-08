@@ -1,0 +1,9 @@
+/_local/
+/target/
+**/*.rs.bk
+*.swp
+*.swo
+*~
+.DS_Store
+.idea/
+.vscode/

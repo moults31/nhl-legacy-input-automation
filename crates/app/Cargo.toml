@@ -1,0 +1,19 @@
+[package]
+name = "nhl-input"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "nhl-input"
+path = "src/main.rs"
+
+[dependencies]
+nhl-controller = { path = "../controller" }
+nhl-observer = { path = "../observer" }
+nhl-script = { path = "../script" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
