@@ -3,9 +3,14 @@ use std::time::Duration;
 
 use anyhow::Result;
 use nhl_controller::{Button, Controller};
+use nhl_observer::Observer;
 use rhai::{Engine, Scope};
 
-pub fn run_script(source: &str, controller: Arc<Mutex<Box<dyn Controller>>>) -> Result<()> {
+pub fn run_script(
+    source: &str,
+    controller: Arc<Mutex<Box<dyn Controller>>>,
+    observer: Arc<dyn Observer>,
+) -> Result<()> {
     let mut engine = Engine::new();
 
     {
@@ -80,6 +85,14 @@ pub fn run_script(source: &str, controller: Arc<Mutex<Box<dyn Controller>>>) -> 
     engine.register_fn("wait", |duration: f64| {
         std::thread::sleep(Duration::from_secs_f64(duration));
     });
+
+    {
+        let obs = Arc::clone(&observer);
+        engine.register_fn("screenshot", move |label: &str| -> Result<String, String> {
+            obs.capture_screenshot(label)
+                .map_err(|e| format!("screenshot: {e}"))
+        });
+    }
 
     let ast = engine.compile(source).map_err(|e| anyhow::anyhow!("{e}"))?;
     let mut scope = Scope::new();
