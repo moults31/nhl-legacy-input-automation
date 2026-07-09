@@ -1,10 +1,17 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
 use nhl_controller::{Button, Controller};
 use nhl_observer::Observer;
-use rhai::{Engine, Scope};
+use rhai::{Dynamic, Engine, Scope};
+
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+pub fn request_stop() {
+    INTERRUPTED.store(true, Ordering::SeqCst);
+}
 
 pub fn run_script(
     source: &str,
@@ -12,6 +19,16 @@ pub fn run_script(
     observer: Arc<dyn Observer>,
 ) -> Result<()> {
     let mut engine = Engine::new();
+
+    engine.set_max_operations(1_000_000_000);
+
+    engine.on_progress(|_count| {
+        if INTERRUPTED.load(Ordering::Relaxed) {
+            Some(Dynamic::from("interrupted"))
+        } else {
+            None
+        }
+    });
 
     {
         let ctrl = Arc::clone(&controller);
@@ -94,13 +111,26 @@ pub fn run_script(
         });
     }
 
+    engine.register_fn("should_stop", || -> bool {
+        INTERRUPTED.load(Ordering::Relaxed)
+    });
+
     let ast = engine.compile(source).map_err(|e| anyhow::anyhow!("{e}"))?;
     let mut scope = Scope::new();
-    engine
-        .run_ast_with_scope(&mut scope, &ast)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let result = engine.run_ast_with_scope(&mut scope, &ast);
 
-    Ok(())
+    match result {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let msg = err.to_string();
+            if msg.contains("interrupted") {
+                tracing::info!("script interrupted by user");
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!("{err}"))
+            }
+        }
+    }
 }
 
 fn parse_button(name: &str) -> Result<Button, String> {

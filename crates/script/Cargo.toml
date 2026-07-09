@@ -10,3 +10,5 @@ nhl-controller = { path = "../controller" }
 nhl-observer = { path = "../observer" }
 anyhow = "1"
 rhai = "1"
+ctrlc = "3"
+tracing = "0.1"
