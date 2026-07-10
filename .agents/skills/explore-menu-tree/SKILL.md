@@ -4,8 +4,8 @@ description: >-
   Map in-game menu trees by driving NHL Legacy Recomp with image-recognition
   guidance. Use this when exploring the game's UI, cataloging menu screens,
   discovering navigation paths, or building menu-graph data. The skill covers
-  launch with FPS cap, ad-hoc input execution via --eval, screenshot capture,
-  and game-state interpretation through a vision model.
+  launch, ad-hoc input execution via --eval, screenshot capture, and game-state
+  interpretation through a vision model.
 ---
 
 # explore-menu-tree
@@ -19,23 +19,19 @@ decide the next input, execute it, repeat.
 
 - **Build**: `cargo build --workspace`
 - **uinput** (`/dev/uinput`): group `input`, same as smoke test
-- **mangohud**: `sudo apt install mangohud` (Debian/Ubuntu) or `sudo dnf install mangohud` (Fedora)
 - **Vision model**: an image-capable model (MiMo2.5, GPT-4o, Claude, etc.) to interpret screenshots
 
 ## Checklist
 
 Run these commands in order. Do not ask for confirmation.
 
-### 1. Start the game (FPS-capped)
+### 1. Start the game
 
 ```
-nohup bash scripts/launch-nhl-capped.sh > screenshots/nhl-launch.log 2>&1 &
+nohup bash ~/code/nhl-legacy/NHL\ Legacy\ Recomp/launch-nhl-legacy.sh > screenshots/nhl-launch.log 2>&1 &
 ```
 
-This wraps the game's launch script with `mangohud --mangohud-config "fps_limit=10,no_display"`,
-limiting the game to ~10 fps to save CPU/GPU for the automation pipeline. The
-`no_display` flag suppresses the MangoHud overlay so it doesn't clutter
-screenshots.
+**IMPORTANT:** This command returns immediately. Do NOT wait for the game to finish loading. Proceed to the next sub-step right away.
 
 ```
 sleep 15
@@ -81,20 +77,23 @@ stable path to read back from.
 
 #### 4b. Interpret the screenshot
 
-Feed the screenshot to an image-recognition model with this prompt (adapt for
-your model's API):
+Feed the screenshot to an image-recognition model. Request **JSON-only output**
+(no prose, no markdown fences) to keep agent context small (see section 6 for
+the full context-management strategy):
 
 > You are navigating the menu system of an NHL hockey video game. Look at this
-> screenshot and describe exactly what you see. Report:
-> 1. The current screen title or context (e.g. "Main Menu", "Settings", "Pause Menu")
-> 2. Every visible menu option, listed in vertical order
-> 3. Which option is currently highlighted/selected
-> 4. Any prompts or button hints visible on screen
-> 5. Whether this looks like a menu screen or gameplay (ice rink)
->
-> CRITICAL: If you see an ice rink, players on ice, a puck, stadium crowd, or
-> any gameplay — respond with exactly "GAMEPLAY DETECTED" at the start.
-> DO NOT describe the gameplay.
+> screenshot and respond ONLY with a single JSON object. No markdown fences, no
+> explanations.
+> ```json
+> {"screen": "<title or context, e.g. Main Menu, Settings, Pause Menu>",
+>  "options": ["option1", "option2", ...],
+>  "selected": "<currently highlighted/selected option>",
+>  "gameplay": false,
+>  "nav_hints": ["<button prompts visible on screen>"],
+>  "confidence": "high|medium|low"}
+> ```
+> CRITICAL: If you see an ice rink, players on ice, a puck, or crowd — set
+> "gameplay": true and leave all other fields empty.
 
 #### 4c. Decide and execute the next action
 
@@ -131,20 +130,55 @@ resource-intensive and derails menu mapping.
 
 | Rule | Why |
 |------|-----|
-| **If model says "GAMEPLAY DETECTED"** | Press Start to open the pause screen, then follow the on-screen menus to quit back to the main menu |
+| **If model returns `"gameplay": true`** | Press Start to open the pause screen, then follow the on-screen menus to quit back to the main menu |
 | **Use A to select, B to go back** | This is the convention for NHL Legacy menus |
 | **D-pad for navigation, not left stick** | Menus are grid-based; d-pad gives precise one-item moves. Left stick can overshoot |
-| **Pause between inputs** | The game runs at 10fps with the cap — a 0.3–0.5s delay between taps is safe |
+| **Pause between inputs** | Allow at least 0.3–0.5s between taps to let the game register each input (menus run at the game's native framerate) |
 | **Keep alive** | If idle > 15s, tap `"dpad_down"` then `"dpad_up"` to prevent attract/demo mode |
 
-### 6. Recording results
+### 6. Recording results & context management
 
-The run directory (`screenshots/<YYYYMMDD_HHMMSS>_run/`) preserves every
-screenshot as an audit trail. After exploration completes, compile a menu graph:
+#### State file (avoid context bloat)
 
-- Each screenshot + the model's description maps to a node
-- Each input action maps to an edge
-- Edge labels: the button pressed (e.g. "A → select", "dpdown → next item")
+The explore cycle accumulates context quickly: each iteration adds a screenshot,
+the vision model's full response, and the bash command output. After ~5 cycles
+the agent's context is bloated and reasoning degrades. Use these strategies:
+
+**Primary: structured state file + JSON model output.**
+
+Maintain a `state.json` in the run directory. Step 4b already requests JSON-only
+output from the vision model — after each cycle, take that structured response
+and append a compact transition record to the state file:
+
+```json
+{
+  "from": "main_menu",
+  "action": "dpad_down",
+  "to": "play_now",
+  "screenshot": "screenshots/20260709_120000_run/step_005.png",
+  "confidence": "high"
+}
+```
+
+At the start of each iteration, the agent reads `state.json` to know where it
+is and what came before — it does NOT scroll through prior conversation messages.
+
+**Fallback: fresh subagent per iteration.**
+
+If context still grows too fast, delegate each decision to a fresh subagent. The
+parent writes the current `state.json`, launches a subagent that reads the state
+file + sees the latest screenshot + decides one action + writes back to the
+state file. The parent only sees the action result and the updated graph — raw
+model responses never reach the parent context.
+
+#### Menu graph
+
+After exploration completes (or incrementally during), compile a menu graph from
+`state.json`:
+
+- Each unique screen name maps to a node
+- Each `(from, action, to)` triple maps to a directed edge
+- Edge labels: the button pressed (e.g. "A", "dpad_down")
 
 Store the compiled graph in the run directory (or report it to the user).
 
@@ -166,24 +200,16 @@ plug/unplug. If the game doesn't react to inputs:
 2. Verify the device exists mid-execution: `evtest /dev/input/event*` (look for "Microsoft X-Box One pad") while nhl-input is running
 3. If the game consistently ignores inputs after hotplug, switch to a long-running script instead of per-step `-e` invocations
 
-### Mangohud not found
+### Optional: FPS cap with MangoHud
 
-```
-which mangohud
-```
+To reduce CPU/GPU load during extended exploration, cap the game to ~10 fps:
 
-Install: `sudo apt install mangohud` (Debian/Ubuntu) or `sudo dnf install mangohud` (Fedora).
+1. Install: `sudo apt install mangohud` (Debian/Ubuntu) or `sudo dnf install mangohud` (Fedora)
+2. Launch with the capped wrapper: `scripts/launch-nhl-capped.sh`
+   (wraps the game with `mangohud --mangohud-config "fps_limit=10,no_display"`)
+3. The `no_display` flag suppresses the MangoHud overlay so it doesn't clutter screenshots
 
-### Game still runs at uncapped framerate
-
-MangoHud may not apply to Proton-launched Vulkan games in some configurations.
-Verify with:
-
-```
-mangohud --mangohud-config "fps_limit=10,fps_only" vkcube
-```
-
-If vkcube caps at 10fps but the game doesn't, try `strangle 10` instead:
+If MangoHud doesn't apply to the Proton-launched game, try `strangle` instead:
 
 ```
 strangle 10 bash ~/code/nhl-legacy/NHL\ Legacy\ Recomp/launch-nhl-legacy.sh
