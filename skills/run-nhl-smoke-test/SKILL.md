@@ -38,11 +38,13 @@ Run these commands in order. Do not ask for confirmation — proceed through eac
 
 ### 1. Start the game
 
-Launch the game in the background:
+Launch the game fully detached so it runs in the background and this command returns immediately:
 
 ```sh
-bash ~/code/nhl-legacy/NHL\ Legacy\ Recomp/launch-nhl-legacy.sh &
+nohup bash ~/code/nhl-legacy/NHL\ Legacy\ Recomp/launch-nhl-legacy.sh > screenshots/nhl-launch.log 2>&1 &
 ```
+
+**IMPORTANT:** This command returns immediately. Do NOT wait for the game to finish loading. Proceed to the next sub-step right away.
 
 Wait for Proton to boot:
 
@@ -78,65 +80,55 @@ Use `"nhllegacy"` as the substring for every `--window-substring` flag below.
 
 Continue to step 4.
 
-### 4. Focus the game window
-
-Tell the user: "Click on the NHL Legacy game window to give it focus, then tell me when ready."
-
-Wait for the user to confirm. Continue to step 5.
-
-### 5. Run the smoke script (detached)
+### 4. Run the smoke script (detached)
 
 ```sh
 setsid ./target/debug/nhl-input \
   --script scripts/examples/smoke-to-main-menu.rhai \
   --window-substring "nhllegacy" \
   --watch screenshots/latest.png \
-  > /tmp/smoke-run.log 2>&1 &
+  > screenshots/smoke-run.log 2>&1 &
+```
+
+Continue to step 5.
+
+### 5. Verify screenshots
+
+Wait long enough for at least 3 screenshots to be captured (they land at ~30s intervals):
+
+```sh
+sleep 95
+```
+
+Count the screenshots in the timestamped run dir:
+
+```sh
+ls screenshots/*_run/smoke_*.png 2>/dev/null | wc -l
+```
+
+You should see at least 3 files. Then consolidate logs into the run dir:
+
+```sh
+RUN_DIR=$(ls -td screenshots/*_run/ | head -1)
+mv screenshots/smoke-run.log "$RUN_DIR/"
+mv screenshots/nhl-launch.log "$RUN_DIR/" 2>/dev/null || true
+echo "Run dir: $RUN_DIR"
+ls -la "$RUN_DIR"
 ```
 
 Continue to step 6.
 
-### 6. Wait for screenshots
-
-```sh
-sleep 90
-```
-
-Check if screenshots were created:
-
-```sh
-ls -la screenshots/*_run/
-```
-
-You should see at least one `smoke_30.png` file. Continue to step 7.
-
-### 7. Monitor for main menu
-
-Tell the user: "The script is running. Check `screenshots/latest.png` — when you see the main menu, tell me to stop."
-
-Wait for the user to say the main menu is visible, or wait 5 minutes maximum.
-
-Continue to step 8.
-
-### 8. Stop the script
-
-```sh
-kill $(pgrep -f "nhl-input.*smoke-to-main-menu") 2>/dev/null || true
-```
-
-Continue to step 9.
-
-### 9. Kill the game
+### 6. Kill the game
 
 ```sh
 ./scripts/kill-nhl.sh
 ```
 
-Continue to step 10.
+Continue to step 7.
 
-### 10. Done
+### 7. Done
 
-Tell the user: "Smoke test complete. Screenshots are in `screenshots/<timestamp>_run/`."
+Tell the user: "Smoke test complete. Screenshots and logs are in `screenshots/<timestamp>_run/`."
 
 ## Troubleshooting
 
@@ -156,7 +148,7 @@ Tell the user: "Smoke test complete. Screenshots are in `screenshots/<timestamp>
 If `ps aux | grep nhl-input` shows nothing but you didn't kill it:
 - You probably ran it with bare `&` instead of `setsid`. The parent shell
   exited and sent SIGHUP. Restart with `setsid`.
-- Check `/tmp/smoke-run.log` for the last screenshot — saved screenshots are
+- Check `screenshots/smoke-run.log` for the last screenshot — saved screenshots are
   not lost.
 
 ### Wrong window in screenshots
