@@ -1,13 +1,16 @@
 use std::fs;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use nhl_controller::UinputController;
 use nhl_observer::{Observer, ScreenCaptureObserver};
 use nhl_script::run_script;
-use tracing::info;
+use tracing::{error, info};
 
 #[derive(Parser)]
 #[command(name = "nhl-input", about = "Virtual Xbox controller input automation")]
@@ -45,9 +48,31 @@ struct Cli {
 
     #[arg(
         long,
-        help = "Run identifier appended to the screenshot directory name (e.g. 'explore' -> '20260709_120000_explore')"
+        help = "Screenshot directory name under screenshots/ (e.g. '20260709_120000_explore'). \
+                When set, used verbatim as the directory name; when absent, auto-generated with a timestamp."
     )]
     run_id: Option<String>,
+
+    #[arg(
+        long,
+        conflicts_with_all = ["script", "eval", "screenshot", "send"],
+        help = "Start in daemon mode, keeping the virtual controller alive between commands"
+    )]
+    daemon: bool,
+
+    #[arg(
+        long,
+        default_value = "/tmp/nhl-input.sock",
+        help = "Unix socket path (bound by --daemon, used by --send)"
+    )]
+    socket: String,
+
+    #[arg(
+        long,
+        conflicts_with_all = ["script", "eval", "screenshot", "list_windows", "daemon"],
+        help = "Send inline Rhai code to a running daemon via the socket"
+    )]
+    send: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -60,12 +85,6 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    let screen_observer = Arc::new(ScreenCaptureObserver::new(&cli.window_substring));
-
-    if let Some(ref run_id) = cli.run_id {
-        screen_observer.set_run_id(run_id);
-    }
-
     if cli.list_windows {
         let windows = xcap::Window::all()?;
         for w in &windows {
@@ -74,6 +93,20 @@ fn main() -> Result<()> {
             }
         }
         return Ok(());
+    }
+
+    if let Some(ref send_script) = cli.send {
+        return send_to_daemon(&cli.socket, send_script);
+    }
+
+    if cli.daemon {
+        return run_daemon(&cli);
+    }
+
+    let screen_observer = Arc::new(ScreenCaptureObserver::new(&cli.window_substring));
+
+    if let Some(ref run_id) = cli.run_id {
+        screen_observer.set_run_id(run_id);
     }
 
     if let Some(label) = &cli.screenshot {
@@ -118,4 +151,116 @@ fn main() -> Result<()> {
 
     info!("script finished");
     Ok(())
+}
+
+fn run_daemon(cli: &Cli) -> Result<()> {
+    let screen_observer = Arc::new(ScreenCaptureObserver::new(&cli.window_substring));
+
+    if let Some(ref run_id) = cli.run_id {
+        screen_observer.set_run_id(run_id);
+    }
+
+    if let Some(ref watch_path) = cli.watch {
+        let p = PathBuf::from(watch_path);
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        screen_observer.set_watch(p);
+    }
+
+    let observer: Arc<dyn nhl_observer::Observer> = screen_observer;
+
+    let controller = UinputController::new().context("failed to create uinput controller")?;
+    let controller: Arc<Mutex<Box<dyn nhl_controller::Controller>>> =
+        Arc::new(Mutex::new(Box::new(controller)));
+
+    info!("virtual Xbox controller created, warming up device (3s)...");
+    std::thread::sleep(Duration::from_secs(3));
+    info!("warmup complete, ready for commands");
+
+    let _ = fs::remove_file(&cli.socket);
+    let listener = UnixListener::bind(&cli.socket)
+        .with_context(|| format!("failed to bind daemon socket: {}", cli.socket))?;
+    info!("daemon listening on {}", cli.socket);
+
+    for stream_result in listener.incoming() {
+        match stream_result {
+            Ok(mut stream) => {
+                let mut buf = String::new();
+                {
+                    let mut reader = BufReader::new(&mut stream);
+                    if let Err(e) = reader.read_line(&mut buf) {
+                        error!("failed to read command from socket: {e}");
+                        continue;
+                    }
+                }
+                let script = buf.trim();
+                if script.is_empty() {
+                    continue;
+                }
+
+                info!(%script, "daemon executing command");
+                let result = run_script(script, Arc::clone(&controller), Arc::clone(&observer));
+
+                let response = match result {
+                    Ok(()) => r#"{"ok":true}"#.to_string(),
+                    Err(e) => {
+                        let escaped = json_escape(&format!("{e:#}"));
+                        format!(r#"{{"ok":false,"err":"{}"}}"#, escaped)
+                    }
+                };
+
+                if let Err(e) = stream
+                    .write_all(response.as_bytes())
+                    .and_then(|_| stream.write_all(b"\n"))
+                    .and_then(|_| stream.flush())
+                {
+                    error!("failed to send daemon response: {e}");
+                }
+            }
+            Err(e) => {
+                error!("daemon accept error: {e}");
+            }
+        }
+    }
+
+    let _ = fs::remove_file(&cli.socket);
+    info!("daemon shut down");
+    Ok(())
+}
+
+fn send_to_daemon(socket_path: &str, script: &str) -> Result<()> {
+    let mut stream = UnixStream::connect(socket_path)
+        .with_context(|| format!("failed to connect to daemon at {socket_path}"))?;
+
+    stream
+        .write_all(script.as_bytes())
+        .and_then(|_| stream.write_all(b"\n"))
+        .with_context(|| "failed to send command to daemon")?;
+
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .with_context(|| "failed to read daemon response")?;
+
+    print!("{response}");
+    Ok(())
+}
+
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
