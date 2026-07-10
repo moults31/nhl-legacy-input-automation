@@ -149,6 +149,14 @@ Pressing `B` from the Team Selection screen triggers a Yes/No confirmation dialo
 
 Default `tap()` holds for 200ms (sufficient at 60fps). At low FPS (e.g., 10fps cap), use `tap_ms("btn", 300)` or `hold("btn", 0.3)` if inputs are dropped.
 
+**Note on Triggers at low FPS:** Under a 10fps cap (e.g. using MangoHud), `tap("rt")` or `tap("lt")` can be completely dropped or ignored by the game's physics/input thread. Use explicit axis setting with a hold duration instead:
+```rhai
+set_axis("right_trigger", 1.0);
+wait(0.3);
+set_axis("right_trigger", 0.0);
+wait(0.8);
+```
+
 ## Player Movement (Roster Trades)
 
 The Player Movement screen (`Customize → ROSTER MANAGEMENT → PLAYER MOVEMENT`) is a **two-column layout** for swapping players between teams.
