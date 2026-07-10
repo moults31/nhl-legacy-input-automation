@@ -34,35 +34,37 @@ run` — to avoid slower startup and process-lifecycle issues.
 
 ## Checklist
 
-Work through these steps in order. Each step includes its own verification.
+Run these commands in order. Do not ask for confirmation — proceed through each step.
 
 ### 1. Start the game
+
+Launch the game in the background:
 
 ```sh
 bash ~/code/nhl-legacy/NHL\ Legacy\ Recomp/launch-nhl-legacy.sh &
 ```
 
-Wait 15 seconds, then verify:
+Wait for Proton to boot:
+
+```sh
+sleep 15
+```
+
+Verify the game process exists:
 
 ```sh
 ps aux | grep nhllegacy.exe | grep -v grep
 ```
 
-You should see `nhllegacy.exe`. The `.exe` suffix distinguishes the Proton
-process from build tools that coincidentally reference "nhllegacy". If the
-game is a native Linux build (unusual), drop the `.exe` suffix.
-
-If the game isn't shown, do not loop — report the failure.
+You should see `nhllegacy.exe`. Continue to step 2.
 
 ### 2. Verify uinput access
-
-Run once:
 
 ```sh
 ls -l /dev/uinput
 ```
 
-Expected output shows group `input` (e.g., `crw-rw----+ 1 root input 10, 223 ... /dev/uinput`).
+Expected: group is `input` (e.g., `crw-rw----+ 1 root input 10, 223 ... /dev/uinput`).
 
 Continue to step 3.
 
@@ -72,18 +74,17 @@ Continue to step 3.
 ./target/debug/nhl-input --list-windows
 ```
 
-Pick the most specific substring. `"nhllegacy"` is usually reliable. Use this
-for every `--window-substring` flag below.
+Use `"nhllegacy"` as the substring for every `--window-substring` flag below.
+
+Continue to step 4.
 
 ### 4. Focus the game window
 
-Proton routes gamepad input to the focused window. Click on the game window
-before running the script.
+Tell the user: "Click on the NHL Legacy game window to give it focus, then tell me when ready."
+
+Wait for the user to confirm. Continue to step 5.
 
 ### 5. Run the smoke script (detached)
-
-The tool runs as an infinite loop. Detach it from the shell session with
-`setsid` so it survives when the parent terminal/tool session ends:
 
 ```sh
 setsid ./target/debug/nhl-input \
@@ -93,74 +94,49 @@ setsid ./target/debug/nhl-input \
   > /tmp/smoke-run.log 2>&1 &
 ```
 
-Note: do NOT use bare `&` without `setsid` — bash sends SIGHUP to background
-processes when the parent shell exits, which kills the tool. `setsid` puts the
-tool in its own session where it is immune to SIGHUP.
+Continue to step 6.
 
-The tool creates a virtual Xbox controller, then taps A + Start every 2
-seconds. It takes a labeled screenshot every 30 iterations (~60 seconds) into
-`screenshots/<timestamp>_run/` and overwrites `screenshots/latest.png` after
-each capture.
+### 6. Wait for screenshots
 
-### 6. Verify progress
+```sh
+sleep 90
+```
 
-After 90 seconds, check if the game is advancing:
+Check if screenshots were created:
 
 ```sh
 ls -la screenshots/*_run/
 ```
 
-Compare file sizes of consecutive screenshots. Different sizes mean the game
-screen changed — inputs are working. Identical sizes across two screenshots
-means the game is stuck (see Troubleshooting).
+You should see at least one `smoke_30.png` file. Continue to step 7.
 
-For live viewing:
-```sh
-feh --reload 2 screenshots/latest.png
-```
+### 7. Monitor for main menu
 
-### 7. Wait for the main menu
+Tell the user: "The script is running. Check `screenshots/latest.png` — when you see the main menu, tell me to stop."
 
-The game reaches the main menu within ~3 minutes of A+Start spam. Stop when:
-- The main menu is visible, OR
-- 5 minutes have passed, OR
-- Two consecutive screenshots have the same file size (game stuck)
+Wait for the user to say the main menu is visible, or wait 5 minutes maximum.
+
+Continue to step 8.
 
 ### 8. Stop the script
 
 ```sh
-kill $(pgrep -f "nhl-input.*smoke-to-main-menu")
+kill $(pgrep -f "nhl-input.*smoke-to-main-menu") 2>/dev/null || true
 ```
 
-If `pgrep` is unavailable, use `kill` with the PID from step 5, or press
-Ctrl+C in the terminal where the tool is running.
+Continue to step 9.
 
 ### 9. Kill the game
 
-**First, verify** which processes you're about to kill:
-```sh
-pgrep -af "nhllegacy.exe"
-```
-
-Confirm these are the game processes you started (not someone else's or
-unrelated build processes), then kill them:
-
-```sh
-kill $(pgrep -f "nhllegacy.exe") 2>/dev/null
-kill $(pgrep -f "steam.exe.*nhllegacy") 2>/dev/null
-kill $(pgrep -f "python3.*proton.*nhllegacy") 2>/dev/null
-```
-
-If `pgrep` doesn't work in your environment, use PIDs directly from `ps aux`.
-
-Alternatively, use the bundled helper (which does the same thing):
 ```sh
 ./scripts/kill-nhl.sh
 ```
 
-### 10. Collect screenshots
+Continue to step 10.
 
-Screenshots are in `screenshots/<timestamp>_run/`, named `smoke_<N>.png`.
+### 10. Done
+
+Tell the user: "Smoke test complete. Screenshots are in `screenshots/<timestamp>_run/`."
 
 ## Troubleshooting
 
