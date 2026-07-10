@@ -50,6 +50,7 @@ impl Observer for NullObserver {
 
 pub struct ScreenCaptureObserver {
     window_substring: String,
+    run_id: Mutex<Option<String>>,
     run_dir: Mutex<Option<PathBuf>>,
     counter: Mutex<u32>,
     watch_path: Mutex<Option<PathBuf>>,
@@ -59,10 +60,15 @@ impl ScreenCaptureObserver {
     pub fn new(window_substring: &str) -> Self {
         Self {
             window_substring: window_substring.to_string(),
+            run_id: Mutex::new(None),
             run_dir: Mutex::new(None),
             counter: Mutex::new(0),
             watch_path: Mutex::new(None),
         }
+    }
+
+    pub fn set_run_id(&self, run_id: &str) {
+        *self.run_id.lock().unwrap() = Some(run_id.to_string());
     }
 
     pub fn set_watch(&self, path: PathBuf) {
@@ -118,7 +124,12 @@ impl ScreenCaptureObserver {
         let mut dir = self.run_dir.lock().unwrap();
         if dir.is_none() {
             let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
-            let path = PathBuf::from("screenshots").join(format!("{}_run", ts));
+            let dir_name = if let Some(ref id) = *self.run_id.lock().unwrap() {
+                format!("{}_{}", ts, id)
+            } else {
+                format!("{}_run", ts)
+            };
+            let path = PathBuf::from("screenshots").join(&dir_name);
             fs::create_dir_all(&path)?;
             tracing::info!("created screenshot directory: {}", path.display());
             *dir = Some(path);

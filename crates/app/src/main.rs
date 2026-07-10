@@ -42,6 +42,12 @@ struct Cli {
         help = "Continuously update this file with the latest screenshot"
     )]
     watch: Option<String>,
+
+    #[arg(
+        long,
+        help = "Run identifier appended to the screenshot directory name (e.g. 'explore' -> '20260709_120000_explore')"
+    )]
+    run_id: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -55,6 +61,10 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let screen_observer = Arc::new(ScreenCaptureObserver::new(&cli.window_substring));
+
+    if let Some(ref run_id) = cli.run_id {
+        screen_observer.set_run_id(run_id);
+    }
 
     if cli.list_windows {
         let windows = xcap::Window::all()?;
