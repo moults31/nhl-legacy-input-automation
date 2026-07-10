@@ -285,3 +285,8 @@ wait(0.8);
 - ROSTER MANAGEMENT leaf nodes: TEAM ROSTERS, EDIT LINES, JERSEY NUMBERS, SET DEFAULT ROSTERS, DOWNLOAD ROSTERS
 - SAVE/LOAD/DELETE leaf nodes: SAVE, DELETE (only LOAD explored)
 - Legacy Main Menu submenus (GAME MODES grid destinations beyond mode selection)
+
+
+## Operational Gotchas (Added by EXECUTE agent)
+
+- **Daemon input**: When chaining `tap()` and `wait()` commands in a single `--send` call, the daemon sometimes silently drops inputs. Send inputs one-by-one with screenshots between each step.

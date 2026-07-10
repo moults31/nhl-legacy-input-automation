@@ -173,6 +173,42 @@ CRITICAL: If you see an ice rink, players on ice, a puck, or crowd — set
 "gameplay": true and leave all other fields empty.
 ```
 
+### EXECUTE-mode vision prompt (overrides shared prompt)
+
+In EXECUTE mode, the vision subagent answers a **match question**, not a
+cataloging question. The shared prompt above encourages freeform menu
+cataloging, which causes the parent agent to drift into EXPLORE mode.
+EXECUTE vision must compare the screenshot against an expected screen from
+`goal.json`.
+
+Use this template — substitute `<expected_screen>` with the current task's
+`pre_screen` or `post_screen`:
+
+```
+Look at this screenshot file: <PATH>
+
+I am executing a task in an NHL hockey video game. My goal.json task
+EXPECTS this screenshot to show: <expected_screen>
+
+Respond ONLY with a single JSON object. No markdown fences, no explanations.
+
+Answer the MATCH question FIRST:
+
+{"match": true|false,
+ "screen": "<actual screen title/context>",
+ "layout": "list|two_column|tabs|grid|custom",
+ "options": ["<visible options>"],
+ "selected": "<highlighted option>",
+ "gameplay": false,
+ "confidence": "high|medium|low",
+ "actual_screen": "<only if match is false: what screen is this instead>"}
+
+CRITICAL:
+- If match is false, I must re-navigate. Accurate actual_screen is essential.
+- Do NOT catalog options out of curiosity. Answer the match question first.
+- If you see an ice rink, players, puck, or crowd: set "gameplay": true.
+```
+
 ---
 
 ## EXPLORE Mode
@@ -339,22 +375,59 @@ For **each task** in `goal.json` (in order):
 
 #### 2a. PRE-CHECK
 
-Take a screenshot, run the vision subagent, and confirm you are on the
-expected `pre_screen`. If not, navigate to it first.
+Take a screenshot, run the EXECUTE vision prompt with `<expected_screen>` set
+to the task's `pre_screen`. If `"match": false`, navigate to the expected
+screen first (using `map.md` Navigation Reference). Do not proceed until
+`"match": true`.
 
-#### 2b. EXECUTE
+#### 2b. NAVIGATION inner loop
 
-Perform the planned actions. Use vision guidance for fine-grained navigation
-within the step. The daemon keeps the controller alive — no warmup needed.
+**CAUTION — daemon input discipline:** The daemon can silently drop inputs
+when multiple `tap()` commands are batched into a single `--send` call. Send
+**exactly one button press per `--send`** so every step produces a screenshot
+you can verify. If you need ↓×6, send six separate `--send` commands.
+
+For navigation within the task, follow this tight loop:
+
+1. **ANCHOR**: Re-read `screenshots/$RUN_ID/goal.json`. Confirm the current
+   task's `pre_screen` (start) and `post_screen` (destination).
+
+2. **CHECK**: Run the EXECUTE vision prompt (see above) with the expected
+   screen. Is `"match": true`? If not, you are off course — press `B` to
+   back up, re-read `goal.json`, and re-navigate from a known anchor in
+   `map.md`.
+
+3. **PLAN**: Consult the `map.md` Navigation Reference table for the shortest
+   button path to the destination. If no entry exists, use the vision result
+   to decide the next single d-pad step toward the target option.
+
+4. **INPUT**: Send EXACTLY ONE button press plus wait + screenshot:
+
+   ```
+   ./target/debug/nhl-input --send 'tap("<button>"); wait(<time>); screenshot("step_N");'
+   ```
+
+   Never batch multiple inputs. The screenshot after each step is your only
+   defense against drift.
+
+5. **VERIFY**: Run the EXECUTE vision prompt on the new screenshot. Did the
+   screen advance toward `post_screen`?
+
+6. **INTERRUPT**: If `"match"` is ever `false` or `"confidence"` is `"low"`,
+   stop immediately. Do not keep pressing buttons hoping to recover.
+   Re-enter the loop from step 1 (ANCHOR).
+
+7. **REPEAT** from step 1 until `"match": true` on the `post_screen`,
+   confirmed by Step 2c (POST-CHECK).
 
 #### 2c. POST-CHECK (MANDATORY)
 
-Take a screenshot, run the vision subagent, and confirm the screen matches
-the expected `post_screen`.
+Take a screenshot, run the EXECUTE vision prompt with `<expected_screen>` set
+to the task's `post_screen`.
 
-- **If it matches:** Mark the task `"status": "completed"` in `goal.json`.
-- **If it does NOT match:** Retry the task once. If it fails again, abort
-  with a diagnostic: report the expected screen vs. the actual screen the
+- **If `"match": true`:** Mark the task `"status": "completed"` in `goal.json`.
+- **If `"match": false`:** Retry the task once. If it fails again, abort
+  with a diagnostic: report the expected screen vs. `actual_screen` the
   vision model returned. Do NOT clean up — preserve the game/daemon state
   for debugging.
 
@@ -366,8 +439,8 @@ When all tasks are marked `"completed"`:
 
 1. **Confirm**: Re-read `goal.json`. Is every task `"status": "completed"`?
 2. **Final screenshot**: Take one last screenshot.
-3. **Verify end state**: Run the vision subagent. Does the screen match the
-   user's intended end state?
+3. **Verify end state**: Run the EXECUTE vision prompt with the user's
+   intended end state as `<expected_screen>`. Is `"match": true`?
 4. **If yes**: Set `"completion_gate": true` in `goal.json`. Report success
    to the user with evidence (relevant screenshot paths and what they show).
    Only then proceed to cleanup.
@@ -398,14 +471,23 @@ dialogs, navigation quirks, wait time adjustments).
 
 ## Cleanup
 
+### Termination gate (MANDATORY — re-read state file before any cleanup)
+
+**EXECUTE mode:** Re-read `screenshots/$RUN_ID/goal.json`. Every task must
+have `"status": "completed"` AND `"completion_gate"` must be `true`.
+
+If NOT: **do NOT clean up.** You have not completed the task. Preserve the
+game and daemon state, report the discrepancy, and abort. Destroying the
+state destroys evidence the agent needs to retry.
+
+**EXPLORE mode:** exploration goal is met + `state.json` compiled.
+
+When the gate is satisfied, run:
+
 ```
 kill $(pgrep -f "nhl-input --daemon") 2>/dev/null; sleep 1
 ./scripts/kill-nhl.sh
 ```
-
-**Before cleanup, verify the termination condition:**
-- EXPLORE mode: exploration goal is met + `state.json` compiled
-- EXECUTE mode: `goal.json` → `completion_gate: true`
 
 ## Troubleshooting
 
