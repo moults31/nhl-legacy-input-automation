@@ -60,7 +60,10 @@ If the game isn't shown, do not loop — report the failure.
 ls -l /dev/uinput
 ```
 
-Must show `crw-rw----` with group `input`. See `docs/setup.md` if not.
+Expected: `crw-rw----` with group `input` (e.g., `crw-rw----+ 1 root input 10, 223 ... /dev/uinput`).
+
+If the group is `input`, proceed to step 3. If not, ask the user to follow
+`docs/setup.md` to set up uinput permissions.
 
 ### 3. Discover the game window
 
