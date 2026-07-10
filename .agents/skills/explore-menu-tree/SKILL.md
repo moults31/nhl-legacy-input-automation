@@ -229,6 +229,8 @@ If MangoHud doesn't apply to the Proton-launched game, try `strangle` instead:
 strangle 10 bash ~/code/nhl-legacy/NHL\ Legacy\ Recomp/launch-nhl-legacy.sh
 ```
 
+**Tap duration at low FPS:** The default `tap()` holds for 200ms. At 10fps (100ms/frame), this spans ~2 frames, which is safe for most menus. If inputs are still dropped, use `tap_ms("btn", 300)` or `hold("btn", 0.3)` to extend the press duration.
+
 ### Screenshots are black or wrong window
 
 Re-run `--list-windows` — the game may have spawned a different window. Use the

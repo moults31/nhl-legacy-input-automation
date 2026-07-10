@@ -57,7 +57,20 @@ pub fn run_script(
             let mut c = ctrl.lock().map_err(|e| format!("mutex lock: {e}"))?;
             c.press(btn).map_err(|e| format!("press: {e}"))?;
             c.flush().map_err(|e| format!("flush: {e}"))?;
-            std::thread::sleep(Duration::from_millis(16));
+            std::thread::sleep(Duration::from_millis(200));
+            c.release(btn).map_err(|e| format!("release: {e}"))?;
+            c.flush().map_err(|e| format!("flush: {e}"))
+        });
+    }
+
+    {
+        let ctrl = Arc::clone(&controller);
+        engine.register_fn("tap_ms", move |button: &str, ms: i64| {
+            let btn = parse_button(button)?;
+            let mut c = ctrl.lock().map_err(|e| format!("mutex lock: {e}"))?;
+            c.press(btn).map_err(|e| format!("press: {e}"))?;
+            c.flush().map_err(|e| format!("flush: {e}"))?;
+            std::thread::sleep(Duration::from_millis(ms as u64));
             c.release(btn).map_err(|e| format!("release: {e}"))?;
             c.flush().map_err(|e| format!("flush: {e}"))
         });
