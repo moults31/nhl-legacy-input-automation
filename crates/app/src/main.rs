@@ -12,8 +12,16 @@ use tracing::info;
 #[derive(Parser)]
 #[command(name = "nhl-input", about = "Virtual Xbox controller input automation")]
 struct Cli {
-    #[arg(short, long, default_value = "scripts/examples/spam-a-start.rhai")]
-    script: String,
+    #[arg(short, long, help = "Path to a Rhai script file")]
+    script: Option<String>,
+
+    #[arg(
+        short = 'e',
+        long,
+        conflicts_with = "script",
+        help = "Execute inline Rhai code"
+    )]
+    eval: Option<String>,
 
     #[arg(
         long,
@@ -85,9 +93,16 @@ fn main() -> Result<()> {
 
     info!("virtual Xbox controller created");
 
-    let source = fs::read_to_string(&cli.script)
-        .with_context(|| format!("failed to read script: {}", cli.script))?;
-    info!(script = %cli.script, "loaded script");
+    let source = match (&cli.script, &cli.eval) {
+        (None, None) => anyhow::bail!("either --script or --eval must be provided"),
+        (Some(path), None) => {
+            fs::read_to_string(path).with_context(|| format!("failed to read script: {path}"))?
+        }
+        (None, Some(inline)) => inline.clone(),
+        _ => unreachable!(),
+    };
+    let source_label = cli.script.as_deref().unwrap_or("<inline>");
+    info!(script = %source_label, "loaded script");
 
     run_script(&source, controller, observer).context("script execution failed")?;
 
