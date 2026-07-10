@@ -123,10 +123,10 @@ impl ScreenCaptureObserver {
     fn ensure_run_dir(&self) -> anyhow::Result<PathBuf> {
         let mut dir = self.run_dir.lock().unwrap();
         if dir.is_none() {
-            let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
             let dir_name = if let Some(ref id) = *self.run_id.lock().unwrap() {
-                format!("{}_{}", ts, id)
+                id.clone()
             } else {
+                let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
                 format!("{}_run", ts)
             };
             let path = PathBuf::from("screenshots").join(&dir_name);

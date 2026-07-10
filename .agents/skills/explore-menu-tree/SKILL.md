@@ -57,19 +57,44 @@ Expected: group is `input` (`crw-rw----+ 1 root input 10, 223 ...`).
 ./target/debug/nhl-input --list-windows
 ```
 
-Use `"nhllegacy"` as the `--window-substring` for every invocation below.
+Discover the window substring to use. Pass `"nhllegacy"` to the daemon in step 3c
+as `--window-substring`. The daemon handles window matching; `--send` commands
+don't need it.
 
 ### 3b. Generate a run ID
 
 All screenshots for this exploration session must land in the same directory.
-Generate a run ID once and pass `--run-id` to every subsequent `nhl-input` call:
+Generate a run ID once — this becomes the exact screenshot directory name under
+`screenshots/`:
 
 ```
-RUN_ID=explore_$(date +%H%M%S)
+RUN_ID=$(date +%Y%m%d_%H%M%S)_explore
 ```
 
-Remember this value. Every `nhl-input` invocation in steps 4 and 5 must include
-`--run-id "$RUN_ID"`.
+The screenshot directory will be `screenshots/$RUN_ID/`. No per-invocation
+timestamps are added.
+
+### 3c. Start the daemon
+
+The daemon keeps the virtual Xbox controller alive between commands, eliminating
+the 3s warmup on every step. Start it once in the background:
+
+```
+nohup ./target/debug/nhl-input --daemon \
+  --run-id "$RUN_ID" \
+  --window-substring "nhllegacy" \
+  --watch screenshots/latest.png \
+  > screenshots/daemon.log 2>&1 &
+```
+
+Wait for the daemon to initialize (it prints "ready for commands"):
+
+```
+sleep 5
+grep -q "ready for commands" screenshots/daemon.log && echo "daemon ready"
+```
+
+All subsequent steps use `--send` to dispatch commands to this daemon.
 
 ### 4. Explore cycle
 
@@ -79,17 +104,15 @@ screenshots **never enter your (the parent's) context**.
 #### 4a. Observe the current screen
 
 ```
-./target/debug/nhl-input \
-  -e 'screenshot("observe");' \
-  --window-substring "nhllegacy" \
-  --run-id "$RUN_ID"
+./target/debug/nhl-input --send 'screenshot("observe");'
 ```
 
-This captures a screenshot into the timestamped run directory. The path is
-printed on stderr. Note the path — you will pass it to the subagent.
+The screenshot lands in `screenshots/$RUN_ID/<NNN>_observe.png`. The daemon
+already has `--watch` set, so `screenshots/latest.png` is updated on every shot.
 
-Also use `--watch screenshots/latest.png` if you want a stable path to read
-back from.
+You can compute the exact path from the counter (incrementing predictably) or
+use `--watch screenshots/latest.png` with the daemon for a stable read-back path.
+The daemon's log (`screenshots/daemon.log`) also contains the full path.
 
 #### 4b. Delegate interpretation to a subagent
 
@@ -104,12 +127,42 @@ Look at this screenshot file: <PATH_FROM_4a>
 You are navigating the menu system of an NHL hockey video game. Look at this
 screenshot and respond ONLY with a single JSON object. No markdown fences, no
 explanations.
+
+Detect the layout type first, then fill in the appropriate fields.
+
+For simple menus (single column of options):
 {"screen": "<title or context, e.g. Main Menu, Settings, Pause Menu>",
+ "layout": "list",
  "options": ["option1", "option2", ...],
  "selected": "<currently highlighted/selected option>",
  "gameplay": false,
  "nav_hints": ["<button prompts visible on screen>"],
  "confidence": "high|medium|low"}
+
+For complex layouts (multiple columns, tabs, split screens, multi-panel):
+{"screen": "<title or context>",
+ "layout": "two_column|tabs|grid|custom",
+ "regions": [
+   {"name": "<descriptive name, e.g. 'Left Team Roster', 'Tab Bar', 'Settings Panel'>",
+    "options": ["item1", "item2", ...],
+    "selected": "<highlighted item, or empty string if none>"}
+ ],
+ "description": "<free-form explanation: what each region is, the overall layout, and the current navigation state>",
+ "gameplay": false,
+ "nav_hints": ["<button prompts visible on screen>"],
+ "confidence": "high|medium|low"}
+
+The "layout" field must be one of:
+- "list" — a single vertical list of options
+- "two_column" — two side-by-side lists (e.g., trade screen)
+- "tabs" — tab bar with content panels below
+- "grid" — a grid of selectable items
+- "custom" — anything else (use "description" to explain it)
+
+IMPORTANT: For complex layouts, always use "regions" to describe each distinct
+area and "description" to explain the overall layout. List ALL items visible in
+each region (at least what's on screen, even if many).
+
 CRITICAL: If you see an ice rink, players on ice, a puck, or crowd — set
 "gameplay": true and leave all other fields empty.
 </subagent prompt>
@@ -127,7 +180,7 @@ the first iteration). Append a transition record:
   "from": "main_menu",
   "action": "dpad_down",
   "to": "play_now",
-  "screenshot": "screenshots/20260709_120000_run/001_observe.png",
+   "screenshot": "screenshots/20260709_120000_explore/001_observe.png",
   "confidence": "high"
 }
 ```
@@ -137,20 +190,21 @@ iterations — do not rely on conversation history.
 
 #### 4d. Decide and execute the next action
 
-Based on the subagent's JSON response, run one navigation step:
+Based on the subagent's JSON response, run one navigation step (no warmup needed
+— the daemon keeps the controller alive):
 
 ```bash
 # Select the highlighted option
-./target/debug/nhl-input -e 'tap("a"); wait(2.5); screenshot("step_N");' --window-substring "nhllegacy" --run-id "$RUN_ID"
+./target/debug/nhl-input --send 'tap("a"); wait(2.5); screenshot("step_N");'
 
 # Scroll down one item
-./target/debug/nhl-input -e 'tap("dpad_down"); wait(0.5); screenshot("step_N");' --window-substring "nhllegacy" --run-id "$RUN_ID"
+./target/debug/nhl-input --send 'tap("dpad_down"); wait(0.5); screenshot("step_N");'
 
 # Go back to previous screen
-./target/debug/nhl-input -e 'tap("b"); wait(1.5); screenshot("step_N");' --window-substring "nhllegacy" --run-id "$RUN_ID"
+./target/debug/nhl-input --send 'tap("b"); wait(1.5); screenshot("step_N");'
 
 # Move left/right between tabs
-./target/debug/nhl-input -e 'tap("dpad_right"); wait(1.0); screenshot("step_N");' --window-substring "nhllegacy" --run-id "$RUN_ID"
+./target/debug/nhl-input --send 'tap("dpad_right"); wait(1.0); screenshot("step_N");'
 ```
 
 Wait times are important:
@@ -196,23 +250,25 @@ After exploration completes (or incrementally during), compile a menu graph from
 
 Store the compiled graph in the run directory (or report it to the user).
 
-### 7. Kill the game
+### 7. Kill the game and daemon
 
 ```
+kill $(pgrep -f "nhl-input --daemon") 2>/dev/null; sleep 1
 ./scripts/kill-nhl.sh
 ```
 
 ## Troubleshooting
 
-### Inputs not reaching the game after first --eval invocation
+### Inputs not reaching the game
 
-The `nhl-input` tool creates a virtual Xbox controller device on startup and
-destroys it on exit. Short-lived `-e` invocations cause frequent device
-plug/unplug. If the game doesn't react to inputs:
+The virtual Xbox controller device is created on daemon startup and persists
+for the entire session. If inputs are being dropped:
 
-1. Add a 3s warm-up at the start of every `-e` script: `-e 'wait(3.0); tap("a"); ...'`
-2. Verify the device exists mid-execution: `evtest /dev/input/event*` (look for "Microsoft X-Box One pad") while nhl-input is running
-3. If the game consistently ignores inputs after hotplug, switch to a long-running script instead of per-step `-e` invocations
+1. Check the daemon is alive: `pgrep -f "nhl-input --daemon"`
+2. Verify the daemon has a controller running: look for "Microsoft X-Box One pad"
+   in `evtest` output
+3. If the daemon crashed, restart it with step 3c
+4. The daemon performs a 3s warmup at startup — no per-command warmup is needed
 
 ### Optional: FPS cap with MangoHud
 
