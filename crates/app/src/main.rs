@@ -154,6 +154,15 @@ fn main() -> Result<()> {
 }
 
 fn run_daemon(cli: &Cli) -> Result<()> {
+    if let Ok(stream) = UnixStream::connect(&cli.socket) {
+        drop(stream);
+        anyhow::bail!(
+            "A daemon is already running on {socket}. Kill it first:\n  kill $(pgrep -f \"nhl-input --daemon\")",
+            socket = cli.socket
+        );
+    }
+    let _ = fs::remove_file(&cli.socket);
+
     let screen_observer = Arc::new(ScreenCaptureObserver::new(&cli.window_substring));
 
     if let Some(ref run_id) = cli.run_id {
@@ -178,7 +187,6 @@ fn run_daemon(cli: &Cli) -> Result<()> {
     std::thread::sleep(Duration::from_secs(3));
     info!("warmup complete, ready for commands");
 
-    let _ = fs::remove_file(&cli.socket);
     let listener = UnixListener::bind(&cli.socket)
         .with_context(|| format!("failed to bind daemon socket: {}", cli.socket))?;
     info!("daemon listening on {}", cli.socket);
