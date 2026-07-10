@@ -123,9 +123,10 @@ All subsequent steps use `--send` to dispatch commands to this daemon.
 
 ### 6. Vision interpretation (shared prompt)
 
-**The parent MUST NOT read or attach screenshots.** A subagent interprets
-each screenshot using this prompt and returns a single JSON object. No
-markdown fences, no explanations.
+**The parent MUST NOT read or attach screenshots.** Use the Task tool with
+`subagent_type="menu-vision"` to interpret each screenshot. Pass the vision
+prompt below as the task description. The subagent returns a single JSON
+object. No markdown fences, no explanations.
 
 ```
 Look at this screenshot file: <PATH>
