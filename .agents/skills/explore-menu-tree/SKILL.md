@@ -302,11 +302,43 @@ Perform a concrete operation described by the user: load a roster, trade
 players, save a file, configure a setting. The session MUST NOT terminate
 until the goal is achieved and verified.
 
+### PERSISTENCE — THE TASK IS NOT DONE UNTIL IT IS VERIFIED
+
+This is the most important rule in the document:
+
+- You SHALL NOT abort a task until every recovery tier has been exhausted.
+- You SHALL NOT give up because menus "seem" wrong or vision "seems" confused.
+- Vision models make mistakes. The game reacts unexpectedly. This is NORMAL.
+- Your only valid reason to abort is that Tier 4 of the RECOVERY protocol
+  has been reached AND Tier 3 was attempted at least twice.
+- If you find yourself thinking "I encountered significant navigation
+  difficulty" — that is a signal to enter the RECOVERY protocol, not to abort.
+- "B to go back" solves 80% of navigation problems. Try it first.
+
+Pressing B is ALWAYS safe: it moves you one screen back toward a known
+anchor. When lost, press B before doing anything else.
+
 ### Step 0: Parse the goal (MANDATORY — before any game action)
 
 Break the user's request into an ordered task list and write it to
 `screenshots/$RUN_ID/goal.json`. The agent MUST write this file before
 sending any inputs to the game.
+
+**CRITICAL — writing pre_screen and post_screen:**
+
+The vision model cannot reliably distinguish between screens at different
+levels of the menu hierarchy that share the same name. For example,
+"Roster Management" appears as:
+- A list item in the CUSTOMIZE menu (alongside CREATION ZONE, SETTINGS, ...)
+- The Roster Management submenu (TEAM ROSTERS, PLAYER MOVEMENT, ...)
+- The SAVE/LOAD/DELETE screen (which has a Roster Management context header)
+
+A single name like `"pre_screen": "Roster Management"` WILL cause `"match":
+true` for all of these, sending you down the wrong path.
+
+**Always include an `expected_options` field** listing the menu items that
+should be visible. The vision model cross-checks this against what it sees.
+Include both in the template:
 
 ```json
 {
@@ -315,9 +347,11 @@ sending any inputs to the game.
     {
       "id": "<short_kebab_case_label>",
       "description": "<human-readable description>",
-      "pre_screen": "<screen name required before this task>",
+      "pre_screen": "<screen title — be specific, e.g. 'ROSTER MANAGEMENT entry in CUSTOMIZE'>",
+      "pre_options": ["<visible options that must appear on this screen>"],
       "actions": ["<high-level action 1>", "<high-level action 2>"],
-      "post_screen": "<screen name expected after this task succeeds>",
+      "post_screen": "<screen title expected after this task succeeds>",
+      "post_options": ["<visible options that must appear on this screen>"],
       "status": "pending"
     }
   ],
@@ -327,7 +361,49 @@ sending any inputs to the game.
 
 Granularity: break into the coarsest logical steps that each have a
 distinguishable start and end screen. The vision-guided loop handles finer
-navigation within each step.
+navigation within each step. If you don't know the exact options for a
+screen, consult `map.md` or take an exploratory screenshot first.
+
+Example with correct specificity:
+
+```json
+{
+  "goal": "Trade 2 TBL players for 2 FLA players, save as TRADED_ROSTER",
+  "tasks": [
+    {
+      "id": "load_roster",
+      "description": "Load ROSTER1",
+      "pre_screen": "CUSTOMIZE — ROSTER MANAGEMENT option is highlighted",
+      "pre_options": ["CREATION ZONE", "CUSTOMIZE AI", "EA SPORTS MEDIA HUB", "FAVORITE TEAM", "OFFER CODE ENTRY", "PROFILE MANAGEMENT", "ROSTER MANAGEMENT", "SAVE/LOAD/DELETE", "SETTINGS"],
+      "actions": ["Navigate to SAVE/LOAD/DELETE", "Select LOAD → ROSTERS", "Select ROSTER1 file", "Confirm Proceed"],
+      "post_screen": "Load Roster — ROSTER1 loaded confirmation visible",
+      "post_options": [],
+      "status": "pending"
+    },
+    {
+      "id": "execute_trade",
+      "description": "Trade 2 TBL players for 2 FLA players",
+      "pre_screen": "CUSTOMIZE — ROSTER MANAGEMENT option is highlighted",
+      "pre_options": ["CREATION ZONE", "CUSTOMIZE AI", "EA SPORTS MEDIA HUB", "FAVORITE TEAM", "OFFER CODE ENTRY", "PROFILE MANAGEMENT", "ROSTER MANAGEMENT", "SAVE/LOAD/DELETE", "SETTINGS"],
+      "actions": ["Navigate to ROSTER MANAGEMENT → PLAYER MOVEMENT", "Trade 2 TBL for 2 FLA via two-column trade screen", "Press X to execute"],
+      "post_screen": "Roster Management submenu — trade confirmed",
+      "post_options": ["TEAM ROSTERS", "PLAYER MOVEMENT", "EDIT LINES", "JERSEY NUMBERS", "SET DEFAULT ROSTERS", "DOWNLOAD ROSTERS"],
+      "status": "pending"
+    },
+    {
+      "id": "save_roster",
+      "description": "Save roster as TRADED_ROSTER",
+      "pre_screen": "CUSTOMIZE — SAVE/LOAD/DELETE option is highlighted",
+      "pre_options": ["CREATION ZONE", "CUSTOMIZE AI", "EA SPORTS MEDIA HUB", "FAVORITE TEAM", "OFFER CODE ENTRY", "PROFILE MANAGEMENT", "ROSTER MANAGEMENT", "SAVE/LOAD/DELETE", "SETTINGS"],
+      "actions": ["Navigate to SAVE", "Enter name TRADED_ROSTER", "Confirm save"],
+      "post_screen": "CUSTOMIZE — save confirmation visible",
+      "post_options": [],
+      "status": "pending"
+    }
+  ],
+  "completion_gate": false
+}
+```
 
 Example for "load ROSTER1, trade 2 TBL for 2 FLA, save as TRADED_ROSTER":
 
@@ -364,23 +440,48 @@ Example for "load ROSTER1, trade 2 TBL for 2 FLA, save as TRADED_ROSTER":
 }
 ```
 
-### Step 1: Navigate to the first task's pre-screen
+### Step 1: Read map.md (MANDATORY — before any navigation)
 
-Use EXPLORE mode techniques (or `map.md`) to reach the starting screen for
-task 1. The daemon and vision pipeline are already running.
+**Open `map.md` at the repo root and read it.** You must memorize:
+- The **Navigation Reference table** — exact button paths to each destination
+- The **Menu Graph hierarchy** — parent/child relationships so you know where
+  you are in the tree when vision gets confused
+- The **Player Movement section** — if trading, know the two-column layout
+  and which buttons switch panels/teams/leagues
 
-### Step 2: Execution loop
+If `map.md` has no entry for a destination you need, you MUST find and
+record the path first (use EXPLORE mode techniques before EXECUTE tasks).
+
+**Never navigate from memory or guess** — follow the exact button sequence
+in the Navigation Reference table. Your only job is to execute that sequence
+correctly, verifying with vision after each step.
+
+### Step 2: Navigate to the first task's pre-screen
+
+Use the button path from `map.md` Navigation Reference to reach the starting
+screen for task 1. The daemon and vision pipeline are already running.
+
+### Step 3: Execution loop
 
 For **each task** in `goal.json` (in order):
 
-#### 2a. PRE-CHECK
+#### 3a. PRE-CHECK
 
 Take a screenshot, run the EXECUTE vision prompt with `<expected_screen>` set
-to the task's `pre_screen`. If `"match": false`, navigate to the expected
-screen first (using `map.md` Navigation Reference). Do not proceed until
-`"match": true`.
+to the task's `pre_screen`.
 
-#### 2b. NAVIGATION inner loop
+- **If `"match": true`:** Cross-check: do the returned `options` match the
+  task's `pre_options`? If the options list is wrong, treat this as
+  `"match": false`.
+
+  If both name and options match, you are on the right screen. Proceed to
+  the NAVIGATION inner loop (3b).
+
+- **If `"match": false`:** Navigate to the expected screen using the exact
+  button path from `map.md` Navigation Reference. Do not proceed until
+  both `"match": true` AND the options cross-check passes.
+
+#### 3b. NAVIGATION inner loop
 
 **CAUTION — daemon input discipline:** The daemon can silently drop inputs
 when multiple `tap()` commands are batched into a single `--send` call. Send
@@ -390,7 +491,9 @@ you can verify. If you need ↓×6, send six separate `--send` commands.
 For navigation within the task, follow this tight loop:
 
 1. **ANCHOR**: Re-read `screenshots/$RUN_ID/goal.json`. Confirm the current
-   task's `pre_screen` (start) and `post_screen` (destination).
+   task's `pre_screen` (start), `pre_options`, `post_screen` (destination),
+   and `post_options`. Re-open `map.md` Navigation Reference. You are
+   anchoring to known coordinates — do not guess from memory.
 
 2. **CHECK**: Run the EXECUTE vision prompt (see above) with the expected
    screen. Is `"match": true`? If not, you are off course — press `B` to
@@ -414,26 +517,69 @@ For navigation within the task, follow this tight loop:
    screen advance toward `post_screen`?
 
 6. **INTERRUPT**: If `"match"` is ever `false` or `"confidence"` is `"low"`,
-   stop immediately. Do not keep pressing buttons hoping to recover.
-   Re-enter the loop from step 1 (ANCHOR).
+   **stop sending inputs immediately**. Do not press more buttons trying to
+   fix the situation — that drifts you further from the anchor.
+   Press `B` ONCE to back up one screen. Take a screenshot and verify you
+   are at a well-known screen. Re-enter the loop from step 1 (ANCHOR) with
+   the current `goal.json` and `map.md`. Do NOT abort the task — INTERRUPT
+   is a normal navigation recovery step, not a terminal state.
 
 7. **REPEAT** from step 1 until `"match": true` on the `post_screen`,
-   confirmed by Step 2c (POST-CHECK).
+   confirmed by Step 3c (POST-CHECK).
 
-#### 2c. POST-CHECK (MANDATORY)
+#### 3c. POST-CHECK (MANDATORY)
 
 Take a screenshot, run the EXECUTE vision prompt with `<expected_screen>` set
 to the task's `post_screen`.
 
-- **If `"match": true`:** Mark the task `"status": "completed"` in `goal.json`.
-- **If `"match": false`:** Retry the task once. If it fails again, abort
-  with a diagnostic: report the expected screen vs. `actual_screen` the
-  vision model returned. Do NOT clean up — preserve the game/daemon state
-  for debugging.
+- **If `"match": true`:** Cross-check: do the returned `options` match the
+  task's `post_options`? The vision model can confuse similarly-named
+  screens — e.g. "Roster Management" as a CUSTOMIZE list item vs. the Roster
+  Management submenu itself. If the options list is wrong, treat this as
+  `"match": false`.
+
+  If both name and options match: mark the task `"status": "completed"` in
+  `goal.json`.
+
+- **If `"match": false`:** Enter the **RECOVERY protocol** (step 3d). Do NOT
+  skip tiers. Do NOT abort until you have exhausted all tiers.
 
 Update `goal.json` on disk after every status change.
 
-### Step 3: Completion Gate (MANDATORY)
+#### 3d. RECOVERY protocol (when lost or match fails)
+
+**YOU ARE NOT ALLOWED TO ABORT A TASK without exhausting all four tiers.**
+Each tier must be attempted with screenshot verification before escalating.
+
+**Tier 1 — One-step back**: Press `B`, wait 1.5s, screenshot. Run the EXECUTE
+vision prompt with the current task's expected screen. Is this a screen you
+recognize from `map.md`? If yes, re-plan from here. If still not matching,
+go to Tier 2.
+
+**Tier 2 — Return to anchor**: Press `B` repeatedly (up to 10 times, with
+1.5s wait + screenshot after each) until you reach a well-known anchor:
+Main Menu, CUSTOMIZE menu, or Roster Management submenu. Verify with the
+vision prompt and cross-check with `map.md`. If you complete 10 presses
+without reaching an anchor, go to Tier 3.
+
+**Tier 3 — Full reset from Main Menu**: Press `Start` → navigate to "Quit"
+→ "Main Menu" with the d-pad and `A`. Wait 5s for transition. Screenshot
+to verify you are at the Main Menu. Re-read `map.md` Navigation Reference.
+Re-navigate to the task's `pre_screen` from scratch, following the exact
+button path from `map.md` — **never guess**. Once `pre_screen` is confirmed
+by vision, retry the task. If Tier 3 fails, try it once more from the start.
+
+**Tier 4 — Escalate**: If Tiers 1–3 all fail (at least two Tier 3 attempts),
+dump a full diagnostic:
+- Screenshot of the current screen
+- The current `goal.json` contents
+- The last 5 vision model JSON responses (the `match`, `screen`, `options`,
+  and `actual_screen` fields)
+
+Only then report the discrepancy to the user. **Do NOT clean up. Do NOT
+kill the daemon or the game.** Preserve state for debugging.
+
+### Step 4: Completion Gate (MANDATORY)
 
 When all tasks are marked `"completed"`:
 
