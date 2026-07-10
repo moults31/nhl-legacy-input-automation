@@ -6,7 +6,13 @@
 
 ```
 MAIN MENU
-├── PLAY                     [►]    (submenu; not yet explored)
+├── PLAY                     [►]    (submenu; explored below)
+│   ├── PLAY NOW
+│   ├── HOCKEY ULTIMATE TEAM
+│   ├── QUICK MODES
+│   ├── ONLINE
+│   ├── CAREER
+│   └── TOURNAMENTS
 ├── COMMUNITY                [►]    (submenu; explored below)
 │   ├── VIEW PLAYER HUB
 │   ├── LEADERBOARDS
@@ -32,10 +38,10 @@ MAIN MENU
 
 ## Exploration TBD
 
-These menus have been identified but not yet entered:
+These menus have been identified but not yet fully explored:
 
-- **PLAY submenu** — PLAY is highlighted with [►] indicator. Pressing A while PLAY is in focus did not open its submenu during exploration. Likely needs different interaction.
-- **CUSTOMIZE** — Not yet reached. COMMUNITY intercepts d-pad navigation when its submenu is expanded.
+- **PLAY submenu** — PLAY NOW, HOCKEY ULTIMATE TEAM, QUICK MODES, ONLINE, CAREER, TOURNAMENTS. Entry confirmed; sub-items not yet explored.
+- **CUSTOMIZE** — Not yet reached.
 
 ---
 
@@ -56,7 +62,7 @@ These menus have been identified but not yet entered:
 
 1. **COMMUNITY submenu is a persistent flyout panel.** When COMMUNITY is highlighted and A is pressed, its submenu (VIEW PLAYER HUB, LEADERBOARDS, LOBBY, MY HIGHLIGHTS) expands in place — not a full screen transition. This submenu intercepts d-pad navigation: scrolling down from COMMUNITY enters the submenu rather than moving to CUSTOMIZE.
 
-2. **Exiting the COMMUNITY flyout requires 5xB taps.** A single B tap does not close the flyout. Rapidly tapping B five times dismisses all layers and returns focus to the main menu item list.
+2. **Exiting the COMMUNITY flyout requires a single B tap.** A single B press closes the flyout and returns focus to the main menu item list. (Previously reported as requiring 5xB taps — this was caused by the 16ms tap duration being too short for the game to register.)
 
 3. **COMMUNITY flyout auto-closes after idle timeout.** After roughly 15–30 seconds without input, the COMMUNITY submenu retracts and the main menu items (PLAY, COMMUNITY, CUSTOMIZE) become fully navigable again.
 
@@ -64,20 +70,22 @@ These menus have been identified but not yet entered:
 
 5. **COMMUNITY is the default/focus item.** No matter which direction was tried (d-pad up, down, left stick), the cursor consistently settled on COMMUNITY when no submenu was active.
 
-6. **PLAY submenu did not open with A press.** PLAY has the same [►] indicator as COMMUNITY, but pressing A while PLAY was focused did not open a submenu. Tried dpad_right as well — no effect. Needs further investigation.
+6. **PLAY submenu opens with a single A press.** PLAY has the same [►] indicator as COMMUNITY, and pressing A while PLAY is focused opens its submenu (PLAY NOW, HOCKEY ULTIMATE TEAM, QUICK MODES, ONLINE, CAREER, TOURNAMENTS). (Previously reported as not opening — this was caused by the 16ms tap duration being too short.)
 
-7. **No system/pause menu accessible from main menu.** Pressing Start or Guide button from the main menu had no visible effect.
+7. **No system/pause menu accessible from main menu.** Pressing Start from the main menu has no visible effect. This is by design — the pause menu is only available during gameplay.
 
-8. **LT/RT tab navigation did not work.** Attempted pressing left bumper to switch between PLAY/COMMUNITY/CUSTOMIZE as tabs — no response.
+8. **LT/RT cycles page indicators but does not navigate main items.** The page counter (e.g., "1/2", "2/3") changes, but the main menu item list (PLAY, COMMUNITY, CUSTOMIZE) remains the same. Use d-pad up/down to navigate between items.
+
+9. **Tap duration was the root cause of dropped inputs.** The original 16ms tap duration was too short for reliable input registration. Increasing to 200ms (spanning ~12 frames at 60fps, ~2 frames at 10fps) resolved the PLAY submenu and COMMUNITY flyout issues. At 10fps, if inputs are still dropped, use `tap_ms("btn", 300)` or `hold("btn", 0.3)`.
 
 ### Navigation Patterns Discovered
 
 | Action | Effect |
 |--------|--------|
 | A on main menu item with [►] | Opens submenu |
-| B (single) | Often ineffective for back navigation |
-| B (rapid 5x) | Reliably returns from submenu to main menu |
+| B (single) | Closes flyout/submenu, returns to main menu |
 | D-pad up/down | Vertical item selection (wraps) |
 | Left stick up/down | Also works, but can overshoot |
 | Idle >15s on COMMUNITY | Flyout auto-closes |
 | D-pad right on [►] item | No observed effect |
+| LT/RT | Cycles page indicator; does not change main items |

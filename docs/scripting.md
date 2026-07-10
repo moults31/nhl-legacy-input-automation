@@ -9,7 +9,8 @@ embedded scripting language.
 |---|---|
 | `press(button)` | Press and hold a button |
 | `release(button)` | Release a button |
-| `tap(button)` | Press + release with a 16 ms gap |
+| `tap(button)` | Press + release with a 200 ms gap |
+| `tap_ms(button, ms)` | Press + release with a custom `ms` millisecond gap |
 | `hold(button, secs)` | Press, wait `secs`, release |
 | `wait(secs)` | Sleep for `secs` seconds |
 | `set_axis(axis, value)` | Set an axis to `value` |
