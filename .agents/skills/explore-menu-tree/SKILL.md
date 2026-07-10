@@ -104,12 +104,42 @@ Look at this screenshot file: <PATH_FROM_4a>
 You are navigating the menu system of an NHL hockey video game. Look at this
 screenshot and respond ONLY with a single JSON object. No markdown fences, no
 explanations.
+
+Detect the layout type first, then fill in the appropriate fields.
+
+For simple menus (single column of options):
 {"screen": "<title or context, e.g. Main Menu, Settings, Pause Menu>",
+ "layout": "list",
  "options": ["option1", "option2", ...],
  "selected": "<currently highlighted/selected option>",
  "gameplay": false,
  "nav_hints": ["<button prompts visible on screen>"],
  "confidence": "high|medium|low"}
+
+For complex layouts (multiple columns, tabs, split screens, multi-panel):
+{"screen": "<title or context>",
+ "layout": "two_column|tabs|grid|custom",
+ "regions": [
+   {"name": "<descriptive name, e.g. 'Left Team Roster', 'Tab Bar', 'Settings Panel'>",
+    "options": ["item1", "item2", ...],
+    "selected": "<highlighted item, or empty string if none>"}
+ ],
+ "description": "<free-form explanation: what each region is, the overall layout, and the current navigation state>",
+ "gameplay": false,
+ "nav_hints": ["<button prompts visible on screen>"],
+ "confidence": "high|medium|low"}
+
+The "layout" field must be one of:
+- "list" — a single vertical list of options
+- "two_column" — two side-by-side lists (e.g., trade screen)
+- "tabs" — tab bar with content panels below
+- "grid" — a grid of selectable items
+- "custom" — anything else (use "description" to explain it)
+
+IMPORTANT: For complex layouts, always use "regions" to describe each distinct
+area and "description" to explain the overall layout. List ALL items visible in
+each region (at least what's on screen, even if many).
+
 CRITICAL: If you see an ice rink, players on ice, a puck, or crowd — set
 "gameplay": true and leave all other fields empty.
 </subagent prompt>
