@@ -47,8 +47,24 @@ MAIN MENU
 │   ├── FAVORITE TEAM
 │   ├── OFFER CODE ENTRY
 │   ├── PROFILE MANAGEMENT
-│   ├── ROSTER MANAGEMENT
-│   ├── SAVE/LOAD/DELETE
+│   ├── ROSTER MANAGEMENT              [►]
+│   │   ├── TEAM ROSTERS
+│   │   ├── PLAYER MOVEMENT            → Two-column trade screen
+│   │   ├── EDIT LINES
+│   │   ├── JERSEY NUMBERS
+│   │   ├── SET DEFAULT ROSTERS
+│   │   └── DOWNLOAD ROSTERS
+│   ├── SAVE/LOAD/DELETE              [►]
+│   │   ├── SAVE
+│   │   ├── LOAD                       → File-type selector
+│   │   │   ├── ROSTERS                → Roster file list
+│   │   │   ├── BE A GM
+│   │   │   ├── TOURNAMENTS
+│   │   │   ├── BE A PRO
+│   │   │   ├── PLAYOFF MODE
+│   │   │   ├── SEASON MODE
+│   │   │   └── NHL™ LEGACY EDITION PROFILE
+│   │   └── DELETE
 │   └── SETTINGS
 │       ├── HOSPITALITY SETTINGS
 │       ├── USER CELEBRATIONS
@@ -81,6 +97,10 @@ MAIN MENU
 | Tournaments | `A` (PLAY), `↓` `↓` `↓` `↓` `↓` (TOURNAMENTS), `A` |
 | Customize | `↓` `↓` (CUSTOMIZE), `A` |
 | Creation Zone | Customize → `A` (CREATION ZONE) |
+| Roster Management | Customize → `↓` ×6 (ROSTER MANAGEMENT), `A` |
+| Player Movement | Roster Management → `↓` (PLAYER MOVEMENT), `A` |
+| Save/Load/Delete | Customize → `↓` ×7 (SAVE/LOAD/DELETE), `A` |
+| Load Roster | Save/Load → `↓` (LOAD), `A` → `↓` (ROSTERS), `A` → select file, `A` → confirm Proceed |
 | Settings | Customize → `↓` ×8 (SETTINGS), `A` |
 
 ### On-screen button hints
@@ -125,21 +145,47 @@ Pressing `B` from the Team Selection screen triggers a Yes/No confirmation dialo
 | Screen transition (B to go back) | 1.5–2.0s |
 | Game startup / title screens | up to 10s |
 
-### Virtual controller warm-up
-
-The virtual Xbox controller device is created on each `nhl-input` invocation and destroyed on exit. The game needs ~3s to recognize the new device. Always start `-e` scripts with `wait(3.0)`.
-
-```
-# Correct:
-nhl-input -e 'wait(3.0); tap("a"); wait(2.0); ...'
-
-# Wrong — inputs may be silently dropped:
-nhl-input -e 'tap("a"); ...'
-```
-
 ### Tap duration
 
 Default `tap()` holds for 200ms (sufficient at 60fps). At low FPS (e.g., 10fps cap), use `tap_ms("btn", 300)` or `hold("btn", 0.3)` if inputs are dropped.
+
+## Player Movement (Roster Trades)
+
+The Player Movement screen (`Customize → ROSTER MANAGEMENT → PLAYER MOVEMENT`) is a **two-column layout** for swapping players between teams.
+
+### Layout
+
+```
+┌─────────────────────┬─────────────────────┐
+│  Left Panel (team)  │  Right Panel (team) │
+│  ← d-pad left       │  d-pad right →      │
+│  LB/RB: cycle team  │  LB/RB: cycle team  │
+│  LT/RT: cycle league│  LT/RT: cycle league│
+│                     │                     │
+│  [player list]      │  [player list]      │
+│                     │                     │
+│  Moving Block       │  Moving Block       │
+│  (staged player)    │  (staged player)    │
+└─────────────────────┴─────────────────────┘
+         X = Execute Move
+```
+
+### How to trade
+
+1. **Switch panels**: `dpad_left` / `dpad_right` to highlight the desired column. The active panel shows a green indicator on the selected player.
+2. **Cycle teams**: `LB` / `RB` to switch between teams within the current league.
+3. **Cycle leagues**: `LT` / `RT` to switch between NHL, SHL, Free Agents, etc.
+4. **Select player**: `A` on a player stages them in that panel's **Moving Block**.
+5. **Switch panels** and repeat to stage a second player from the other team.
+6. **Execute**: `X` to complete the swap.
+7. **Drop to Free Agency**: `Y` instead of `X` sends the staged player to the Free Agent pool (one-sided, not a trade).
+
+### Operational notes
+
+- **d-pad left/right is NOT listed in on-screen hints** but is the only way to switch between the two panels. Without it you're stuck on one side.
+- The roster file list under `LOAD → ROSTERS` shows saved rosters sorted by last-modified date (newest first). The first entry is highlighted by default.
+- Loading a roster triggers a confirmation dialog ("All unsaved changes will be lost"). Navigate to **Proceed** (`↑` then `A`) to confirm.
+- After loading, the game returns to the Roster file list; press `B` to back out to the Customize menu.
 
 ## Avoided Modes
 
@@ -153,7 +199,9 @@ Default `tap()` holds for 200ms (sufficient at 60fps). At low FPS (e.g., 10fps c
 ## Unexplored
 
 - **COMMUNITY** submenu items (VIEW PLAYER HUB, LEADERBOARDS, LOBBY, MY HIGHLIGHTS)
-- **CUSTOMIZE** leaf nodes: CUSTOMIZE AI, FAVORITE TEAM, OFFER CODE ENTRY, PROFILE MANAGEMENT, ROSTER MANAGEMENT, SAVE/LOAD/DELETE, EA SPORTS™ MEDIA HUB
+- **CUSTOMIZE** leaf nodes: CUSTOMIZE AI, FAVORITE TEAM, OFFER CODE ENTRY, PROFILE MANAGEMENT, EA SPORTS™ MEDIA HUB
 - **SETTINGS** submenu items
 - **NHL™ Moments Live** internal menu (Game Modes, Season, Playoffs, Rosters, Settings, Credits, Quit)
 - **Winter Classic** — venue selection only; gameplay entry not explored
+- **ROSTER MANAGEMENT** leaf nodes: TEAM ROSTERS, EDIT LINES, JERSEY NUMBERS, SET DEFAULT ROSTERS, DOWNLOAD ROSTERS
+- **SAVE/LOAD/DELETE** leaf nodes: SAVE, DELETE (only LOAD explored)
