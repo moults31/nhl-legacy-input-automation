@@ -123,10 +123,25 @@ All subsequent steps use `--send` to dispatch commands to this daemon.
 
 ### 6. Vision interpretation (shared prompt)
 
-**The parent MUST NOT read or attach screenshots.** Use the Task tool with
-`subagent_type="menu-vision"` to interpret each screenshot. Pass the vision
-prompt below as the task description. The subagent returns a single JSON
-object. No markdown fences, no explanations.
+> **HARD REQUIREMENT — READ THIS:**
+>
+> The parent agent CANNOT view images. Do NOT use `Read` on screenshots —
+> it will fail. There is exactly ONE valid way to interpret a screenshot:
+> the `menu-vision` subagent.
+>
+> | Mechanism | Allowed? |
+> |-----------|----------|
+> | `Task` tool with `subagent_type="menu-vision"` | **YES — only way** |
+> | `Read` tool on `.png` file | **NO — will fail** |
+> | Any other subagent type (`explore`, `general`, etc.) | **NO** |
+> | Guessing / assuming what the screen shows | **NO — navigation will drift** |
+>
+> **No screenshot is ever interpreted without a `menu-vision` response.**
+> If the `menu-vision` call fails or returns no valid JSON: **HALT.**
+> Do not send any inputs. Retry the vision call or report the failure.
+
+Pass the vision prompt below as the task description. The subagent returns a
+single JSON object. No markdown fences, no explanations.
 
 ```
 Look at this screenshot file: <PATH>
@@ -210,6 +225,29 @@ CRITICAL:
 - If you see an ice rink, players, puck, or crowd: set "gameplay": true.
 ```
 
+### 6a. Screenshot naming convention
+
+**Screenshot labels must be neutral counters ONLY.** The label parameter
+expresses nothing about screen identity — it is purely sequential. Screen
+identity is assigned AFTER `menu-vision` returns.
+
+| Allowed | Not allowed |
+|---------|-------------|
+| `screenshot("step_001")` | `screenshot("at_customize")` |
+| `screenshot("step_014")` | `screenshot("tbl_player_selected")` |
+
+Never label a screenshot based on intent or what you expect the screen to
+show. You do not know what screen you are on until `menu-vision` confirms it.
+
+After every `menu-vision` call, append one line to
+`screenshots/$RUN_ID/vision_log.jsonl`:
+
+```json
+{"step": "014", "screenshot": "screenshots/.../014_step_014.png", "vision_response": {<full JSON from menu-vision>}}
+```
+
+This file is the **only source of truth** for what each screenshot shows.
+
 ---
 
 ## EXPLORE Mode
@@ -225,10 +263,10 @@ reachable screens visited").
 #### 4a. Observe the current screen
 
 ```
-./target/debug/nhl-input --send 'screenshot("observe");'
+./target/debug/nhl-input --send 'screenshot("step_N");'
 ```
 
-The screenshot lands in `screenshots/$RUN_ID/<NNN>_observe.png`.
+The screenshot lands in `screenshots/$RUN_ID/<NNN>_step_N.png`.
 
 #### 4b. Delegate interpretation to a subagent
 
@@ -406,40 +444,7 @@ Example with correct specificity:
 }
 ```
 
-Example for "load ROSTER1, trade 2 TBL for 2 FLA, save as TRADED_ROSTER":
 
-```json
-{
-  "goal": "Trade 2 TBL players for 2 FLA players and save roster as TRADED_ROSTER",
-  "tasks": [
-    {
-      "id": "load_roster1",
-      "description": "Load ROSTER1",
-      "pre_screen": "Roster Management",
-      "actions": ["navigate to Load Roster", "select ROSTER1", "confirm"],
-      "post_screen": "Roster Management (ROSTER1 loaded)",
-      "status": "pending"
-    },
-    {
-      "id": "execute_trade",
-      "description": "Trade 2 TBL players for 2 FLA players via Roster Moves",
-      "pre_screen": "Roster Management",
-      "actions": ["navigate to Roster Moves", "select TBL", "pick 2 players", "select FLA", "pick 2 players", "confirm trade"],
-      "post_screen": "Roster Moves (trade confirmed / updated rosters visible)",
-      "status": "pending"
-    },
-    {
-      "id": "save_roster",
-      "description": "Save roster as TRADED_ROSTER",
-      "pre_screen": "Roster Management",
-      "actions": ["navigate to Save Roster", "enter name TRADED_ROSTER", "confirm save"],
-      "post_screen": "Roster Management (TRADED_ROSTER saved confirmation visible)",
-      "status": "pending"
-    }
-  ],
-  "completion_gate": false
-}
-```
 
 ### Step 1: Read map.md (MANDATORY — before any navigation)
 
@@ -473,12 +478,13 @@ to the task's `pre_screen`.
 
 - **If `"match": true`:** Cross-check: do the returned `options` match the
   task's `pre_options`? If the options list is wrong, treat this as
-  `"match": false`.
+  `"match": false`. If both name and options match:
+  1. **Log the result** — append to `screenshots/$RUN_ID/vision_log.jsonl`.
+  2. Proceed to the NAVIGATION inner loop (3b).
 
-  If both name and options match, you are on the right screen. Proceed to
-  the NAVIGATION inner loop (3b).
-
-- **If `"match": false`:** Navigate to the expected screen using the exact
+- **If `"match": false`:** Log the discrepancy to
+  `screenshots/$RUN_ID/discrepancies.jsonl` (see "Vision discrepancy
+  tracking" below). Then navigate to the expected screen using the exact
   button path from `map.md` Navigation Reference. Do not proceed until
   both `"match": true` AND the options cross-check passes.
 
@@ -489,6 +495,13 @@ when multiple `tap()` commands are batched into a single `--send` call. Send
 **exactly one button press per `--send`** so every step produces a screenshot
 you can verify. If you need ↓×6, send six separate `--send` commands.
 
+**GATE — vision liveness check:** The `menu-vision` subagent (`subagent_type="menu-vision"`) is
+the ONLY way to interpret a screenshot. The parent agent cannot view images.
+If a `menu-vision` call fails, returns empty, or returns non-JSON: **HALT
+immediately.** Do not press any buttons. The loop is: INPUT → SCREENSHOT →
+menu-vision → (parse JSON) → next decision. **No menu-vision response = no
+further inputs.**
+
 For navigation within the task, follow this tight loop:
 
 1. **ANCHOR**: Re-read `screenshots/$RUN_ID/goal.json`. Confirm the current
@@ -496,10 +509,14 @@ For navigation within the task, follow this tight loop:
    and `post_options`. Re-open `map.md` Navigation Reference. You are
    anchoring to known coordinates — do not guess from memory.
 
-2. **CHECK**: Run the EXECUTE vision prompt (see above) with the expected
-   screen. Is `"match": true`? If not, you are off course — press `B` to
-   back up, re-read `goal.json`, and re-navigate from a known anchor in
-   `map.md`.
+2. **CHECK**: Run the EXECUTE vision prompt via `menu-vision` with the
+   expected screen. You MUST receive a valid JSON object. If the subagent
+   call fails, returns empty, or returns non-JSON: **HALT.** Do not send
+   any inputs. Retry the vision call. Only proceed to step 3 once you have
+   a parseable JSON response. Check `"match"` and cross-check `"options"`
+   against expected options. If mismatch, you are off course — press `B`
+   to back up, re-read `goal.json`, and re-navigate from a known anchor
+   in `map.md`.
 
 3. **PLAN**: Consult the `map.md` Navigation Reference table for the shortest
    button path to the destination. If no entry exists, use the vision result
@@ -514,8 +531,12 @@ For navigation within the task, follow this tight loop:
    Never batch multiple inputs. The screenshot after each step is your only
    defense against drift.
 
-5. **VERIFY**: Run the EXECUTE vision prompt on the new screenshot. Did the
-   screen advance toward `post_screen`?
+5. **VERIFY**: Run the EXECUTE vision prompt via `menu-vision` on the new
+   screenshot. Same halt rule as CHECK — you MUST receive a parseable JSON
+   response before sending any further inputs. Log the result to
+   `vision_log.jsonl`. Compare `"screen"` and `"options"` against the
+   expected intermediate screen. If they don't match what the planned step
+   should produce, treat as INTERRUPT (step 6).
 
 6. **INTERRUPT**: If `"match"` is ever `false` or `"confidence"` is `"low"`,
    **stop sending inputs immediately**. Do not press more buttons trying to
@@ -539,11 +560,14 @@ to the task's `post_screen`.
   Management submenu itself. If the options list is wrong, treat this as
   `"match": false`.
 
-  If both name and options match: mark the task `"status": "completed"` in
-  `goal.json`.
+  If both name and options match:
+  1. **Log the result** — append to `screenshots/$RUN_ID/vision_log.jsonl`.
+  2. Mark the task `"status": "completed"` in `goal.json`.
 
-- **If `"match": false`:** Enter the **RECOVERY protocol** (step 3d). Do NOT
-  skip tiers. Do NOT abort until you have exhausted all tiers.
+- **If `"match": false`:** Log the discrepancy to
+  `screenshots/$RUN_ID/discrepancies.jsonl`. Then enter the **RECOVERY
+  protocol** (step 3d). Do NOT skip tiers. Do NOT abort until you have
+  exhausted all tiers.
 
 Update `goal.json` on disk after every status change.
 
@@ -574,8 +598,10 @@ by vision, retry the task. If Tier 3 fails, try it once more from the start.
 dump a full diagnostic:
 - Screenshot of the current screen
 - The current `goal.json` contents
+- The contents of `screenshots/$RUN_ID/discrepancies.jsonl` (every mismatch
+  logged during this session)
 - The last 5 vision model JSON responses (the `match`, `screen`, `options`,
-  and `actual_screen` fields)
+  and `actual_screen` fields) from `screenshots/$RUN_ID/vision_log.jsonl`
 
 Only then report the discrepancy to the user. **Do NOT clean up. Do NOT
 kill the daemon or the game.** Preserve state for debugging.
@@ -598,6 +624,27 @@ When all tasks are marked `"completed"`:
 If at any point the vision subagent's JSON reads like it is cataloging menu
 options rather than confirming a pre/post condition, **re-read `goal.json`**
 and re-anchor to the current task. The agent is drifting into EXPLORE mode.
+
+### Vision discrepancy tracking
+
+The agent MUST maintain two per-run log files in `screenshots/$RUN_ID/`:
+
+**`vision_log.jsonl`** — append one line after every `menu-vision` call:
+
+```json
+{"step": "014", "screenshot": "screenshots/.../step_014.png", "match": true, "screen": "CUSTOMIZE", "options": ["CREATION ZONE", "CUSTOMIZE AI", ...], "selected": "ROSTER MANAGEMENT", "confidence": "high"}
+```
+
+**`discrepancies.jsonl`** — append one line when `"match": false` or the
+options cross-check fails:
+
+```json
+{"step": "014", "expected": "CUSTOMIZE", "expected_options": ["CREATION ZONE", ...], "actual": "SAVE/LOAD/DELETE", "actual_options": ["SAVE", "LOAD", "DELETE"], "action_taken": "pressed B, entered RECOVERY tier 1"}
+```
+
+These files are dumped as part of Tier 4 escalation diagnostics. They are
+also the agent's best defense against drift — a growing `discrepancies.jsonl`
+signals that the agent has been pressing buttons without verification.
 
 ### Update map.md
 
