@@ -59,58 +59,98 @@ Expected: group is `input` (`crw-rw----+ 1 root input 10, 223 ...`).
 
 Use `"nhllegacy"` as the `--window-substring` for every invocation below.
 
+### 3b. Generate a run ID
+
+All screenshots for this exploration session must land in the same directory.
+Generate a run ID once and pass `--run-id` to every subsequent `nhl-input` call:
+
+```
+RUN_ID=explore_$(date +%H%M%S)
+```
+
+Remember this value. Every `nhl-input` invocation in steps 4 and 5 must include
+`--run-id "$RUN_ID"`.
+
 ### 4. Explore cycle
 
-This is the core loop. The agent runs a vision-guided feedback loop:
+This is the core loop. A subagent performs each vision-guided step so that
+screenshots **never enter your (the parent's) context**.
 
 #### 4a. Observe the current screen
 
 ```
 ./target/debug/nhl-input \
   -e 'screenshot("observe");' \
-  --window-substring "nhllegacy"
+  --window-substring "nhllegacy" \
+  --run-id "$RUN_ID"
 ```
 
 This captures a screenshot into the timestamped run directory. The path is
-printed on stderr. Also use `--watch screenshots/latest.png` if you want a
-stable path to read back from.
+printed on stderr. Note the path — you will pass it to the subagent.
 
-#### 4b. Interpret the screenshot
+Also use `--watch screenshots/latest.png` if you want a stable path to read
+back from.
 
-Feed the screenshot to an image-recognition model. Request **JSON-only output**
-(no prose, no markdown fences) to keep agent context small (see section 6 for
-the full context-management strategy):
+#### 4b. Delegate interpretation to a subagent
 
-> You are navigating the menu system of an NHL hockey video game. Look at this
-> screenshot and respond ONLY with a single JSON object. No markdown fences, no
-> explanations.
-> ```json
-> {"screen": "<title or context, e.g. Main Menu, Settings, Pause Menu>",
->  "options": ["option1", "option2", ...],
->  "selected": "<currently highlighted/selected option>",
->  "gameplay": false,
->  "nav_hints": ["<button prompts visible on screen>"],
->  "confidence": "high|medium|low"}
-> ```
-> CRITICAL: If you see an ice rink, players on ice, a puck, or crowd — set
-> "gameplay": true and leave all other fields empty.
+**You MUST NOT read or attach the screenshot yourself.** Launch a subagent with
+the screenshot file path and the vision prompt below. The subagent returns a
+JSON summary; you never see the raw image bytes.
 
-#### 4c. Decide and execute the next action
+```
+<subagent prompt>
+Look at this screenshot file: <PATH_FROM_4a>
 
-Based on the model's response, run one navigation step. Examples:
+You are navigating the menu system of an NHL hockey video game. Look at this
+screenshot and respond ONLY with a single JSON object. No markdown fences, no
+explanations.
+{"screen": "<title or context, e.g. Main Menu, Settings, Pause Menu>",
+ "options": ["option1", "option2", ...],
+ "selected": "<currently highlighted/selected option>",
+ "gameplay": false,
+ "nav_hints": ["<button prompts visible on screen>"],
+ "confidence": "high|medium|low"}
+CRITICAL: If you see an ice rink, players on ice, a puck, or crowd — set
+"gameplay": true and leave all other fields empty.
+</subagent prompt>
+```
+
+The subagent returns the JSON. Extract it and proceed.
+
+#### 4c. Record the transition in state.json
+
+Read the current `state.json` from the run directory (or create it if this is
+the first iteration). Append a transition record:
+
+```json
+{
+  "from": "main_menu",
+  "action": "dpad_down",
+  "to": "play_now",
+  "screenshot": "screenshots/20260709_120000_run/001_observe.png",
+  "confidence": "high"
+}
+```
+
+Write the updated `state.json` back. This file is your **only** memory of prior
+iterations — do not rely on conversation history.
+
+#### 4d. Decide and execute the next action
+
+Based on the subagent's JSON response, run one navigation step:
 
 ```bash
 # Select the highlighted option
-./target/debug/nhl-input -e 'tap("a"); wait(2.5); screenshot("step_N");' --window-substring "nhllegacy"
+./target/debug/nhl-input -e 'tap("a"); wait(2.5); screenshot("step_N");' --window-substring "nhllegacy" --run-id "$RUN_ID"
 
 # Scroll down one item
-./target/debug/nhl-input -e 'tap("dpad_down"); wait(0.5); screenshot("step_N");' --window-substring "nhllegacy"
+./target/debug/nhl-input -e 'tap("dpad_down"); wait(0.5); screenshot("step_N");' --window-substring "nhllegacy" --run-id "$RUN_ID"
 
 # Go back to previous screen
-./target/debug/nhl-input -e 'tap("b"); wait(1.5); screenshot("step_N");' --window-substring "nhllegacy"
+./target/debug/nhl-input -e 'tap("b"); wait(1.5); screenshot("step_N");' --window-substring "nhllegacy" --run-id "$RUN_ID"
 
 # Move left/right between tabs
-./target/debug/nhl-input -e 'tap("dpad_right"); wait(1.0); screenshot("step_N");' --window-substring "nhllegacy"
+./target/debug/nhl-input -e 'tap("dpad_right"); wait(1.0); screenshot("step_N");' --window-substring "nhllegacy" --run-id "$RUN_ID"
 ```
 
 Wait times are important:
@@ -119,9 +159,9 @@ Wait times are important:
 - **Screen transition (B to go back)**: 1.5–2.0s
 - **Game startup/title screens**: up to 10s for initial loading
 
-#### 4d. Repeat
+#### 4e. Repeat
 
-Go back to 4b with the new screenshot until the exploration goal is met.
+Go back to 4a until the exploration goal is met.
 
 ### 5. Safety rules
 
@@ -130,46 +170,20 @@ resource-intensive and derails menu mapping.
 
 | Rule | Why |
 |------|-----|
-| **If model returns `"gameplay": true`** | Press Start to open the pause screen, then follow the on-screen menus to quit back to the main menu |
+| **If subagent returns `"gameplay": true`** | Press Start to open the pause screen, then follow the on-screen menus to quit back to the main menu |
 | **Use A to select, B to go back** | This is the convention for NHL Legacy menus |
 | **D-pad for navigation, not left stick** | Menus are grid-based; d-pad gives precise one-item moves. Left stick can overshoot |
 | **Pause between inputs** | Allow at least 0.3–0.5s between taps to let the game register each input (menus run at the game's native framerate) |
 | **Keep alive** | If idle > 15s, tap `"dpad_down"` then `"dpad_up"` to prevent attract/demo mode |
 
-### 6. Recording results & context management
+### 6. State file & menu graph
 
-#### State file (avoid context bloat)
+#### State file
 
-The explore cycle accumulates context quickly: each iteration adds a screenshot,
-the vision model's full response, and the bash command output. After ~5 cycles
-the agent's context is bloated and reasoning degrades. Use these strategies:
-
-**Primary: structured state file + JSON model output.**
-
-Maintain a `state.json` in the run directory. Step 4b already requests JSON-only
-output from the vision model — after each cycle, take that structured response
-and append a compact transition record to the state file:
-
-```json
-{
-  "from": "main_menu",
-  "action": "dpad_down",
-  "to": "play_now",
-  "screenshot": "screenshots/20260709_120000_run/step_005.png",
-  "confidence": "high"
-}
-```
-
-At the start of each iteration, the agent reads `state.json` to know where it
-is and what came before — it does NOT scroll through prior conversation messages.
-
-**Fallback: fresh subagent per iteration.**
-
-If context still grows too fast, delegate each decision to a fresh subagent. The
-parent writes the current `state.json`, launches a subagent that reads the state
-file + sees the latest screenshot + decides one action + writes back to the
-state file. The parent only sees the action result and the updated graph — raw
-model responses never reach the parent context.
+`state.json` lives in the run directory. It is an array of transition records.
+The parent agent reads it at the start of each iteration to know where it is
+and what came before. **Never scroll through prior conversation messages to
+reconstruct history — read `state.json` instead.**
 
 #### Menu graph
 
