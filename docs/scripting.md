@@ -15,6 +15,13 @@ embedded scripting language.
 | `set_axis(axis, value)` | Set an axis to `value` |
 | `set_stick(side, x, y)` | Set a thumbstick position |
 
+## Observer functions
+
+| Function | Returns | Description |
+|---|---|---|
+| `screenshot(label)` | `String` (file path) | Capture a PNG of the game window and save it to the run's screenshot directory |
+| `should_stop()` | `bool` | Returns `true` after Ctrl+C is pressed, allowing scripts to exit their loops gracefully |
+
 ## Button names
 
 `"a"`, `"b"`, `"x"`, `"y"`, `"start"`, `"back"` (or `"select"`),
@@ -62,4 +69,33 @@ set_stick("left", 0.0, 0.0);
 set_axis("rt", 1.0);
 wait(0.1);
 set_axis("rt", 0.0);
+```
+
+### Periodic screenshots
+
+```rhai
+let count = 0;
+
+loop {
+    tap("a");
+    wait(1.0);
+
+    count += 1;
+    if count % 60 == 0 {
+        screenshot("checkpoint");
+    }
+}
+```
+
+### Graceful interrupt
+
+```rhai
+loop {
+    if should_stop() {
+        print("stopping on user request");
+        break;
+    }
+    tap("a");
+    wait(1.0);
+}
 ```

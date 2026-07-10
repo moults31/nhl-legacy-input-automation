@@ -14,6 +14,8 @@ nhl-controller = { path = "../controller" }
 nhl-observer = { path = "../observer" }
 nhl-script = { path = "../script" }
 anyhow = "1"
+ctrlc = "3"
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+xcap = "0.9"
