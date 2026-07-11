@@ -67,7 +67,7 @@ struct Cli {
 
     #[arg(
         long,
-        default_value = "/tmp/nhl-input.sock",
+        default_value = "_data/nhl-input.sock",
         help = "Unix socket path (bound by --daemon, used by --send)"
     )]
     socket: String,
@@ -322,6 +322,11 @@ fn run_daemon(cli: &Cli) -> Result<()> {
         );
     }
     let _ = fs::remove_file(&cli.socket);
+
+    let socket_path = PathBuf::from(&cli.socket);
+    if let Some(parent) = socket_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
 
     let screen_observer = Arc::new(ScreenCaptureObserver::new(&cli.window_substring));
 
