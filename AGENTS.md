@@ -1,6 +1,8 @@
 # policy: if sudo is needed and `sudo -n` fails, stop and ask the user to run it.
 # never try `sudo -S` or similar workarounds.
 
+# policy: never use `/tmp`. For temporary artifacts, use the repo-local gitignored `_data`.
+
 # pre-commit hooks (runs fmt, clippy, doc on commit; test on push)
 # one-time setup: python3 -m pip install pre-commit && pre-commit install && pre-commit install --hook-type pre-push
 # run all hooks on all files: pre-commit run --all-files --hook-stage pre-push

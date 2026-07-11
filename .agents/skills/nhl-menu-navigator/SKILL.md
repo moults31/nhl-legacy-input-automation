@@ -56,7 +56,7 @@ See `map.md` for its expected structure.
 ### 1. Start the game
 
 ```
-nohup bash ~/code/nhl-legacy/NHL\ Legacy\ Recomp/launch-nhl-legacy.sh > screenshots/nhl-launch.log 2>&1 &
+nohup bash ./scripts/launch-nhl-capped.sh > screenshots/nhl-launch.log 2>&1 &
 ```
 
 **IMPORTANT:** This command returns immediately. Proceed immediately.
@@ -804,20 +804,9 @@ kill $(pgrep -f "nhl-input --daemon") 2>/dev/null; sleep 1
    `--send` commands — the daemon serializes them, causing timeouts. Use
    `scroll("dpad_down", 6, 300)` inside a single `--send` instead.
 
-### Optional: FPS cap with MangoHud
+### Tap duration at low FPS:
 
-To reduce CPU/GPU load during extended sessions, cap the game to ~10 fps:
-
-1. Install: `sudo apt install mangohud` (Debian/Ubuntu) or `sudo dnf install mangohud` (Fedora)
-2. Launch with the capped wrapper: `scripts/launch-nhl-capped.sh`
-3. If MangoHud doesn't apply, try `strangle`:
-
-```
-strangle 10 bash ~/code/nhl-legacy/NHL\ Legacy\ Recomp/launch-nhl-legacy.sh
-```
-
-**Tap duration at low FPS:** The default `tap()` holds for 200ms. At 10fps
-(100ms/frame), this spans ~2 frames. If inputs are dropped, use
+The default `tap()` holds for 200ms. At 10fps (100ms/frame), this spans ~2 frames. If inputs are dropped, use
 `tap_ms("btn", 300)` or `hold("btn", 0.3)`.
 
 ### Screenshots are black or wrong window
