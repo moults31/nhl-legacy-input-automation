@@ -743,8 +743,10 @@ For **each task** in `goal.json` (in order):
 
 #### 3a. PRE-CHECK
 
-Take a screenshot, run the unified vision prompt via `menu-vision`, and log
-the result via `nhl-input --log-step`.
+Take a screenshot. If the expected screen is in `map.md`, try the OCR fast
+path first (§3b.0). If OCR fails or the screen is unfamiliar, run the
+unified vision prompt via `menu-vision`. Log the result via
+`nhl-input --log-step`.
 
 Then perform two passes:
 
@@ -822,15 +824,76 @@ hallucination:
 **CAUTION — daemon input discipline:** Multi-input scripts (e.g.
 `scroll("dpad_down", 6, 300)`) are allowed and encouraged for well-mapped
 sequences. Every script MUST end with `screenshot()` and the resulting
-image MUST be analyzed by `menu-vision` before ANY further inputs are sent.
-Never chain two scripts without vision+log between them.
+image MUST be analyzed before ANY further inputs are sent.
+Never chain two scripts without analysis+log between them.
 
-**GATE — vision liveness check:** The `menu-vision` subagent (`subagent_type="menu-vision"`) is
-the ONLY way to interpret a screenshot. The parent agent cannot view images.
-If a `menu-vision` call fails, returns empty, or returns non-JSON: **HALT
-immediately.** Do not press any buttons. The loop is: INPUT → SCREENSHOT →
-menu-vision → (parse JSON) → consistency checks → goal-match → log-step →
-next decision. **No menu-vision response = no further inputs.**
+**GATE — analysis liveness check:** Every screenshot MUST be analyzed
+before any input is sent. There are two analysis paths, tried in this order:
+
+| Tier | Path | Cost | When to use |
+|------|------|------|-------------|
+| 0 | **OCR fast path** (`--ocr`) | <1s | Screens whose title exists in `map.md` |
+| 1 | **menu-vision** subagent | 60–120s | Fallback when Tier 0 fails; unfamiliar screens; first-launch dialogs |
+
+If BOTH Tier 0 AND Tier 1 fail on the same screenshot (OCR fails AND
+menu-vision returns invalid/unparseable) — do NOT send any input. HALT
+immediately. The loop is: INPUT → SCREENSHOT → (OCR then vision fallback)
+→ validation → log → next decision. **No valid analysis = no further inputs.**
+
+#### 3b.0. OCR Fast Path (Tier 0)
+
+When the current screen's expected title (from `goal.json` or the last
+known state) appears in `map.md`, try OCR first:
+
+```bash
+./target/debug/nhl-input --ocr screenshots/$RUN_ID/NNN_step_NNN.png
+```
+
+This returns JSON with:
+- `lines`: array of `{text, rect: {left, top, right, bottom}}` — every text line with its bounding box
+- `all_text`: all recognized text, newline-separated
+- `selected_index`: index into `lines` of the likely selected option (via luminance analysis), or `null`
+- `selected_text`: the text of the selected line, or `null`
+
+**OCR consistency checks (OCR-A):**
+
+| # | Check | If fails |
+|---|-------|----------|
+| OCR-A1 | At least one `lines[].text` matches the expected `screen_title` from `map.md` (case-insensitive substring) | Cannot identify screen. Fall back to Tier 1 (menu-vision). |
+| OCR-A2 | ≥70% of the expected options for this screen (from `map.md` Navigation Reference or `goal.json`) are found in `all_text` (case-insensitive) | OCR may have garbled text. Fall back to Tier 1. |
+| OCR-A3 | `selected_index` is non-null and `lines[selected_index].text` matches at least one expected option | Cannot determine cursor position. Fall back to Tier 1, but you may still use the `all_text` to identify the screen. |
+
+**Interpreting OCR results for navigation:**
+
+If all OCR-A checks pass:
+1. The identified screen is the one whose title matched in OCR-A1.
+2. The selected option is `lines[selected_index].text`.
+3. Look up this screen in `map.md` Navigation Reference to determine the next button press(es) to reach the destination.
+4. Proceed to step 4 (INPUT) — skip steps 2–3 (CHECK/PLAN via vision).
+5. Log the OCR result as follows:
+   ```bash
+   # Build a vision-compatible response from OCR data.
+   # all_text_ocr is the raw OCR all_text, split into lines.
+   # options_ocr is the expected options from map.md for this screen.
+   # selected_text is lines[selected_index].text.
+   cat > /tmp/nhl_response.txt << 'RESPEOF'
+   {"all_text":["<line1>","<line2>",..."],"screen_title":"<matched>","layout":"list","layout_description":"OCR fast-path (Tier 0)","options":["<opt1>","<opt2>",..."],"selected":"<selected_text>","button_hints":[],"gameplay":false,"confidence":"high","ocr_source":true}
+   RESPROMPTEOF
+   ./target/debug/nhl-input --run-id "$RUN_ID" --step N --screenshot "screenshots/$RUN_ID/NNN_step_NNN.png" \
+     --prompt-file /tmp/nhl_prompt.txt --response-file /tmp/nhl_response.txt \
+     --assessment goal_match --decision navigate --plan "<one-liner>"
+   ```
+6. The `ocr_source: true` field in the log entry marks this step as OCR-powered for retrospective analysis.
+
+**OCR failure → Tier 1 fallback:**
+
+If ANY of OCR-A1, OCR-A2, or OCR-A3 fail:
+1. Do NOT send any input. Do NOT press B. The game state is correct — perception failed.
+2. Run `menu-vision` on the SAME screenshot (streamlined prompt for mapped screens, exhaustive for unfamiliar).
+3. Run Pass A + Pass B on the vision response.
+4. If vision succeeds: log normally, proceed with navigation. Resume OCR for the next step.
+5. If vision also fails (Pass A produces `low` confidence, or Pass B mismatch):
+   Enter RECOVERY protocol (§3d). At this point it IS a navigation problem.
 
 For navigation within the task, follow this tight loop:
 
@@ -839,13 +902,19 @@ For navigation within the task, follow this tight loop:
    `post_screen`, and `post_options`. Re-open `map.md` Navigation Reference.
    You are anchoring to known coordinates — do not guess from memory.
 
-2. **CHECK**: Run the vision prompt via `menu-vision` with NO task
-    context (the same prompt for every vision call). Use the **streamlined**
-    prompt variant from §6 for routine navigation between known screens,
-    and the **exhaustive** variant for first-launch dialogs, EXPLORE mode,
-    or any unfamiliar screen. You MUST receive a valid JSON object. If the
-    subagent call fails, returns empty, or returns non-JSON: **HALT.** Do
-    not send any inputs. Retry the vision call.
+2. **CHECK**: Determine which analysis path to use:
+
+   **If the expected screen is in `map.md`**: Run the OCR fast path (§3b.0).
+   If OCR passes (OCR-A1 + OCR-A2 + OCR-A3 all pass): skip to step 4
+   (INPUT). You have identified the screen and selected option — look
+   up the next button press in `map.md` and execute it.
+
+   **If OCR fails any check OR the screen is NOT in `map.md`**: Run the
+   vision prompt via `menu-vision` with NO task context. Use the
+   **streamlined** prompt variant for mapped screens, **exhaustive** for
+   unfamiliar screens or first-launch dialogs. You MUST receive a valid
+   JSON object. If the subagent call fails, returns empty, or returns
+   non-JSON: **HALT.** Do not send any inputs. Retry the vision call.
 
    Run **Pass A** consistency checks (C1–C7 from §3a) on the vision response.
    If Pass A fails: treat as INTERRUPT (step 6). Do NOT attempt goal-matching
@@ -889,14 +958,15 @@ For navigation within the task, follow this tight loop:
    between releases. Valid directions: `"dpad_up"` / `"up"`, `"dpad_down"` /
    `"down"`, `"dpad_left"` / `"left"`, `"dpad_right"` / `"right"`.
 
-5. **VERIFY**: Run the vision prompt via `menu-vision` on the new
-    screenshot. Same halt rule as CHECK — you MUST receive a parseable JSON
-    response before sending any further inputs. Use the streamlined prompt
-    for routine navigation, exhaustive for unfamiliar screens.
+5. **VERIFY**: Analyze the new screenshot. Same rules as CHECK:
+   try OCR first for mapped screens, fall back to `menu-vision` if OCR
+   fails. Same halt rule — you MUST receive parseable output before sending
+   any further inputs.
 
-   Run **Pass A** consistency checks. If they pass, compare against the
-   expected intermediate screen from your plan. If the screen doesn't match
-   what the planned step should produce, treat as INTERRUPT (step 6).
+   If using vision: run **Pass A** consistency checks. If they pass, compare
+   against the expected intermediate screen from your plan. If the screen
+   doesn't match what the planned step should produce, treat as INTERRUPT
+   (step 6).
 
    Log the result via `nhl-input --log-step`.
 

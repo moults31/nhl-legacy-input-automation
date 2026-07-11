@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
+use ocrs::{ImageSource, OcrEngine, OcrEngineParams, TextItem};
+
 pub trait Observer: Send + Sync {
     fn is_connected(&self) -> bool;
     fn detect_scene(&self) -> Scene;
@@ -21,6 +23,12 @@ pub trait Observer: Send + Sync {
             "screenshots not supported by this observer"
         ))
     }
+    fn ocr_analyze(&self) -> Option<(OcrResult, Option<usize>)> {
+        None
+    }
+    fn ocr_analyze_from_path(&self, _path: &str) -> Option<(OcrResult, Option<usize>)> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -34,6 +42,42 @@ pub struct PixelColor {
     pub r: u8,
     pub g: u8,
     pub b: u8,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OcrRect {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+}
+
+impl OcrRect {
+    pub fn center(&self) -> (i32, i32) {
+        ((self.left + self.right) / 2, (self.top + self.bottom) / 2)
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OcrWord {
+    pub text: String,
+    pub rect: OcrRect,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OcrLine {
+    pub text: String,
+    pub rect: OcrRect,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub words: Vec<OcrWord>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OcrResult {
+    pub lines: Vec<OcrLine>,
+    pub all_text: String,
+    #[serde(skip_serializing)]
+    pub selected_index: Option<usize>,
 }
 
 pub struct NullObserver;
@@ -57,6 +101,7 @@ pub struct ScreenCaptureObserver {
     counter: AtomicU32,
     watch_path: Mutex<Option<PathBuf>>,
     json_log: Mutex<Option<Arc<Mutex<BufWriter<fs::File>>>>>,
+    ocr_engine: Mutex<Option<OcrEngine>>,
 }
 
 impl ScreenCaptureObserver {
@@ -68,6 +113,7 @@ impl ScreenCaptureObserver {
             counter: AtomicU32::new(0),
             watch_path: Mutex::new(None),
             json_log: Mutex::new(None),
+            ocr_engine: Mutex::new(None),
         }
     }
 
@@ -214,6 +260,101 @@ impl ScreenCaptureObserver {
 
         Ok(path.to_string_lossy().to_string())
     }
+
+    fn extract_ocr(
+        engine: &OcrEngine,
+        rgb: &image::RgbImage,
+        (w, h): (u32, u32),
+    ) -> Option<(OcrResult, Option<usize>)> {
+        let img_source = ImageSource::from_bytes(rgb.as_raw(), (w, h)).ok()?;
+        let input = engine.prepare_input(img_source).ok()?;
+        let word_rects = engine.detect_words(&input).ok()?;
+        let text_lines = engine.find_text_lines(&input, &word_rects);
+        let recognized = engine.recognize_text(&input, &text_lines).ok()?;
+
+        let mut result_lines = Vec::new();
+        let mut all_text = String::new();
+
+        for line_opt in recognized.iter().flatten() {
+            let rect = line_opt.bounding_rect();
+            let text = line_opt.to_string();
+            if text.trim().is_empty() {
+                continue;
+            }
+
+            let ocr_rect = OcrRect {
+                left: rect.left(),
+                top: rect.top(),
+                right: rect.right(),
+                bottom: rect.bottom(),
+            };
+
+            let words: Vec<OcrWord> = line_opt
+                .words()
+                .map(|w| {
+                    let wr = w.bounding_rect();
+                    OcrWord {
+                        text: w.to_string(),
+                        rect: OcrRect {
+                            left: wr.left(),
+                            top: wr.top(),
+                            right: wr.right(),
+                            bottom: wr.bottom(),
+                        },
+                    }
+                })
+                .collect();
+
+            if !all_text.is_empty() {
+                all_text.push('\n');
+            }
+            all_text.push_str(&text);
+
+            result_lines.push(OcrLine {
+                text,
+                rect: ocr_rect,
+                words,
+            });
+        }
+
+        let selected_index = Self::find_selected_by_luminance(rgb, &result_lines, w, h);
+
+        Some((
+            OcrResult {
+                lines: result_lines,
+                all_text,
+                selected_index,
+            },
+            selected_index,
+        ))
+    }
+
+    fn find_selected_by_luminance(
+        rgb: &image::RgbImage,
+        lines: &[OcrLine],
+        img_w: u32,
+        img_h: u32,
+    ) -> Option<usize> {
+        let mut best_idx = None;
+        let mut best_lum = 0.0;
+
+        for (i, line) in lines.iter().enumerate() {
+            let (cx, cy) = line.rect.center();
+            if cx < 0 || cy < 0 || cx as u32 >= img_w || cy as u32 >= img_h {
+                continue;
+            }
+            let pixel = rgb.get_pixel(cx as u32, cy as u32);
+            let lum = 0.299_f64 * f64::from(pixel[0])
+                + 0.587_f64 * f64::from(pixel[1])
+                + 0.114_f64 * f64::from(pixel[2]);
+            if lum > best_lum {
+                best_lum = lum;
+                best_idx = Some(i);
+            }
+        }
+
+        best_idx
+    }
 }
 
 impl Observer for ScreenCaptureObserver {
@@ -243,5 +384,33 @@ impl Observer for ScreenCaptureObserver {
 
     fn capture_screenshot_flat(&self, label: &str) -> anyhow::Result<String> {
         self.capture_and_save(label, true)
+    }
+
+    fn ocr_analyze(&self) -> Option<(OcrResult, Option<usize>)> {
+        let window = self.find_window()?;
+        let img = window.capture_image().ok()?;
+        let rgb = image::DynamicImage::ImageRgba8(img).to_rgb8();
+        let (w, h) = rgb.dimensions();
+
+        let mut guard = self.ocr_engine.lock().ok()?;
+        if guard.is_none() {
+            *guard = Some(OcrEngine::new(OcrEngineParams::default()).ok()?);
+        }
+        let engine = guard.as_ref().unwrap();
+
+        Self::extract_ocr(engine, &rgb, (w, h))
+    }
+
+    fn ocr_analyze_from_path(&self, path: &str) -> Option<(OcrResult, Option<usize>)> {
+        let img = image::open(path).ok()?.to_rgb8();
+        let (w, h) = img.dimensions();
+
+        let mut guard = self.ocr_engine.lock().ok()?;
+        if guard.is_none() {
+            *guard = Some(OcrEngine::new(OcrEngineParams::default()).ok()?);
+        }
+        let engine = guard.as_ref().unwrap();
+
+        Self::extract_ocr(engine, &img, (w, h))
     }
 }

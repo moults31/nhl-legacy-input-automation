@@ -41,6 +41,13 @@ struct Cli {
     )]
     screenshot: Option<String>,
 
+    #[arg(
+        long,
+        conflicts_with_all = ["script", "eval", "list_windows", "daemon", "send", "log_step"],
+        help = "Run OCR on a saved screenshot file and output JSON to stdout"
+    )]
+    ocr: Option<String>,
+
     #[arg(long, help = "List all visible window titles and exit")]
     list_windows: bool,
 
@@ -187,6 +194,10 @@ fn main() -> Result<()> {
         let path = screen_observer.capture_screenshot_flat(label)?;
         eprintln!("screenshot saved: {path}");
         return Ok(());
+    }
+
+    if let Some(ref ocr_path) = cli.ocr {
+        return run_ocr(ocr_path);
     }
 
     if let Some(ref watch_path) = cli.watch {
@@ -711,4 +722,35 @@ fn json_escape(s: &str) -> String {
         }
     }
     out
+}
+
+fn run_ocr(path: &str) -> Result<()> {
+    let path_buf = PathBuf::from(path);
+    if !path_buf.exists() {
+        anyhow::bail!("screenshot file does not exist: {}", path);
+    }
+
+    let observer = ScreenCaptureObserver::new("");
+
+    let start = std::time::Instant::now();
+    let (result, _selected) = observer
+        .ocr_analyze_from_path(path)
+        .ok_or_else(|| anyhow::anyhow!("OCR analysis failed for: {}", path))?;
+    let elapsed_ms = start.elapsed().as_millis();
+
+    let selected_text = _selected
+        .and_then(|idx| result.lines.get(idx))
+        .map(|line| line.text.as_str());
+
+    let output = serde_json::json!({
+        "lines": result.lines,
+        "all_text": result.all_text,
+        "selected_index": result.selected_index,
+        "selected_text": selected_text,
+    });
+
+    eprintln!("ocr: {} text lines in {}ms", result.lines.len(), elapsed_ms);
+    println!("{}", serde_json::to_string_pretty(&output)?);
+
+    Ok(())
 }
