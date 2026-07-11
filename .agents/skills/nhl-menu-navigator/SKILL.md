@@ -734,8 +734,23 @@ the game may present zero or more first-launch dialogs (Autosave Information,
 Profile Warning, Choose Your Favorite Team, Tutorial prompt). See `map.md`
 "First Launch Hazards" for recognition and dismissal instructions. These
 dialogs can appear in any order or not at all. After each `A`-press to
-dismiss, take a screenshot and verify with vision before sending the next
-input.
+dismiss, take a screenshot and analyze it via the two-tier gate below before
+sending the next input.
+
+### Gate: Analysis liveness (applies to ALL phases)
+
+Every screenshot MUST be analyzed before any input is sent. There are two
+analysis paths, tried in this order:
+
+| Tier | Path | Cost | When to use |
+|------|------|------|-------------|
+| 0 | **OCR fast path** (`--ocr`) | <1s | Screens whose title exists in `map.md` |
+| 1 | **menu-vision** subagent | 60–120s | Fallback when Tier 0 fails; unfamiliar screens; first-launch dialogs |
+
+If BOTH Tier 0 AND Tier 1 fail on the same screenshot (OCR fails AND
+menu-vision returns invalid/unparseable) — do NOT send any input. HALT
+immediately. The loop is: INPUT → SCREENSHOT → (OCR then vision fallback)
+→ validation → log → next decision. **No valid analysis = no further inputs.**
 
 ### Step 3: Execution loop
 
@@ -827,18 +842,7 @@ sequences. Every script MUST end with `screenshot()` and the resulting
 image MUST be analyzed before ANY further inputs are sent.
 Never chain two scripts without analysis+log between them.
 
-**GATE — analysis liveness check:** Every screenshot MUST be analyzed
-before any input is sent. There are two analysis paths, tried in this order:
-
-| Tier | Path | Cost | When to use |
-|------|------|------|-------------|
-| 0 | **OCR fast path** (`--ocr`) | <1s | Screens whose title exists in `map.md` |
-| 1 | **menu-vision** subagent | 60–120s | Fallback when Tier 0 fails; unfamiliar screens; first-launch dialogs |
-
-If BOTH Tier 0 AND Tier 1 fail on the same screenshot (OCR fails AND
-menu-vision returns invalid/unparseable) — do NOT send any input. HALT
-immediately. The loop is: INPUT → SCREENSHOT → (OCR then vision fallback)
-→ validation → log → next decision. **No valid analysis = no further inputs.**
+**(See the shared Analysis Liveness gate above — Tier 0 OCR first, Tier 1 menu-vision fallback.)**
 
 #### 3b.0. OCR Fast Path (Tier 0)
 
