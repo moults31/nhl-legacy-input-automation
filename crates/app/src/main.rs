@@ -250,7 +250,13 @@ fn run_log_step(cli: &Cli) -> Result<()> {
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("--plan is required"))?;
 
-    let valid_assessments = ["match_confirmed", "mismatch", "recovery", "halt"];
+    let valid_assessments = [
+        "goal_match",
+        "goal_mismatch",
+        "inconsistent",
+        "recovery",
+        "halt",
+    ];
     if !valid_assessments.contains(&assessment.as_str()) {
         anyhow::bail!("--assessment must be one of: {:?}", valid_assessments);
     }
@@ -274,16 +280,134 @@ fn run_log_step(cli: &Cli) -> Result<()> {
     let response_value: Value =
         serde_json::from_str(&response_text).with_context(|| "response file is not valid JSON")?;
 
-    for field in &[
-        "match",
-        "screen",
+    let required_fields: &[&str] = &[
+        "all_text",
+        "screen_title",
         "layout",
+        "layout_description",
         "options",
         "selected",
+        "button_hints",
+        "gameplay",
         "confidence",
-    ] {
+    ];
+    for field in required_fields {
         if response_value.get(field).is_none() {
             anyhow::bail!("vision response missing required field: {}", field);
+        }
+    }
+
+    // --- type validation ---
+
+    if !response_value["all_text"].is_array() {
+        anyhow::bail!("all_text must be an array");
+    }
+    for (i, v) in response_value["all_text"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+    {
+        if !v.is_string() {
+            anyhow::bail!("all_text[{}] must be a string", i);
+        }
+    }
+
+    if !response_value["screen_title"].is_string() {
+        anyhow::bail!("screen_title must be a string");
+    }
+
+    if !response_value["layout_description"].is_string() {
+        anyhow::bail!("layout_description must be a string");
+    }
+
+    let valid_layouts = ["list", "two_column", "tabs", "grid", "custom"];
+    let layout = response_value["layout"].as_str().unwrap_or("");
+    if !valid_layouts.contains(&layout) {
+        anyhow::bail!("layout must be one of {:?}, got: {}", valid_layouts, layout);
+    }
+
+    if !response_value["options"].is_array() {
+        anyhow::bail!("options must be an array");
+    }
+    for (i, v) in response_value["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+    {
+        if !v.is_string() {
+            anyhow::bail!("options[{}] must be a string", i);
+        }
+    }
+
+    if !response_value["selected"].is_string() {
+        anyhow::bail!("selected must be a string");
+    }
+
+    if !response_value["button_hints"].is_array() {
+        anyhow::bail!("button_hints must be an array");
+    }
+    for (i, v) in response_value["button_hints"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+    {
+        if !v.is_string() {
+            anyhow::bail!("button_hints[{}] must be a string", i);
+        }
+    }
+
+    if !response_value["gameplay"].is_boolean() {
+        anyhow::bail!("gameplay must be a boolean");
+    }
+
+    let valid_confidences = ["high", "medium", "low"];
+    let confidence = response_value["confidence"].as_str().unwrap_or("");
+    if !valid_confidences.contains(&confidence) {
+        anyhow::bail!(
+            "confidence must be one of {:?}, got: {}",
+            valid_confidences,
+            confidence
+        );
+    }
+
+    // Optional breadcrumbs: if present, must be a string
+    if let Some(b) = response_value.get("breadcrumbs") {
+        if !b.is_string() {
+            anyhow::bail!("breadcrumbs must be a string if present");
+        }
+    }
+
+    // Optional regions: if present, must be an array of objects with string fields
+    if let Some(regions) = response_value.get("regions") {
+        if !regions.is_array() {
+            anyhow::bail!("regions must be an array if present");
+        }
+        for (i, region) in regions.as_array().unwrap().iter().enumerate() {
+            if !region.is_object() {
+                anyhow::bail!("regions[{}] must be an object", i);
+            }
+            for field in &["name", "options", "selected"] {
+                if region.get(field).is_none() {
+                    anyhow::bail!("regions[{}] missing required field: {}", i, field);
+                }
+            }
+            if !region["name"].is_string() {
+                anyhow::bail!("regions[{}].name must be a string", i);
+            }
+            if !region["options"].is_array() {
+                anyhow::bail!("regions[{}].options must be an array", i);
+            }
+            if !region["selected"].is_string() {
+                anyhow::bail!("regions[{}].selected must be a string", i);
+            }
+            for (j, opt) in region["options"].as_array().unwrap().iter().enumerate() {
+                if !opt.is_string() {
+                    anyhow::bail!("regions[{}].options[{}] must be a string", i, j);
+                }
+            }
         }
     }
 

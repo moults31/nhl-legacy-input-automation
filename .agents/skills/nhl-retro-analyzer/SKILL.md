@@ -96,8 +96,8 @@ the exact screenshot path.
 #### 4c. Cross-reference with map.md
 
 For the flagged step:
-1. What screen was **expected** (from goal.json `pre_screen` / `post_screen`)?
-2. What screen was **actually seen** (from vision_response `screen` / `actual_screen`)?
+1. What screen was **expected** (from goal.json `pre_screen_title` / `post_screen_title`)?
+2. What screen was **actually seen** (from vision_response `screen_title`)?
 3. What button path does `map.md` document to reach the expected screen?
 4. What buttons were **actually sent** (from daemon_events `command` entries)?
 
@@ -110,11 +110,11 @@ Choose ONE root cause per hotspot:
 
 | Root cause | How to detect | Fix |
 |------------|--------------|-----|
-| **Unexpected dialog** | `actual_screen` is "Autosave Information", "Profile Warning", "Tutorial prompt", "Choose Your Favorite Team" | Add dialog handling to the skill's navigation preamble or to map.md hazards |
+| **Unexpected dialog** | `screen_title` is "Autosave Information", "Profile Warning", "Tutorial prompt", or `options` includes "Continue Without Saving" | Add dialog handling to the skill's navigation preamble or to map.md hazards |
 | **Scroll overshoot** | Vision shows correct menu BUT the wrong item is highlighted (e.g., selected options don't match expected) | Adjust `scroll()` count in map.md Navigation Reference |
-| **Screen name ambiguity** | `match: true` but the returned options don't match `pre_options` — two screens share the same name | Update `goal.json` with `pre_options` or make `pre_screen` more specific in map.md |
+| **Screen name ambiguity** | Assessment is `goal_match` but the returned `options` don't match `pre_options` — two screens share the same name or the vision response's `screen_title` is ambiguous | Update `goal.json` with `pre_options` and `pre_screen_title` or make the canonical name more specific in map.md |
 | **Wrong menu entry** | Agent entered a completely different submenu (e.g., Creation Zone instead of Roster Management) | Wrong button path or scroll count. Update map.md with correct count |
-| **Vision model error** | `match: false` but the screen IS correct — vision hallucinated the wrong title | Add `pre_options` to `goal.json` as a second verification factor |
+| **Vision model error** | Assessment is `goal_mismatch` or `inconsistent` but the screen IS correct — vision returned a confusing description. Check Pass A consistency failures. | Add `pre_options` and `pre_screen_title` to `goal.json` as a second verification factor |
 | **Input dropout** | Command was sent but screenshot shows no change (need daemon_events timestamp analysis) | Increase tap duration with `tap_ms` or add wait after input |
 | **Map.md missing path** | Navigation Reference has no entry for the attempted destination | Run EXPLORE mode to map the path, then update map.md |
 | **Menu wrap-around** | Agent scrolled past the last option and wrapped to the top (or vice versa) | Document the wrap behavior in map.md; prefer upward scroll if close to top |
@@ -210,7 +210,7 @@ pauses > 60s suggest:
 
 ### Wrong menu entries
 
-When `match: false` and the `actual_screen` is a completely unrelated menu
+When the `screen_title` from the vision response is a completely unrelated menu
 (e.g., in Creation Zone when navigating to Roster Management), the agent
 entered the wrong submenu. Common causes:
 1. Scroll count in map.md is off by 1

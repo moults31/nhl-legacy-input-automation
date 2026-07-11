@@ -122,7 +122,7 @@ grep -q "ready for commands" screenshots/daemon.log && echo "daemon ready"
 
 All subsequent steps use `--send` to dispatch commands to this daemon.
 
-### 6. Vision interpretation (shared prompt)
+### 6. Vision interpretation (shared prompt — used by both EXPLORE and EXECUTE)
 
 > **HARD REQUIREMENT — READ THIS:**
 >
@@ -141,89 +141,79 @@ All subsequent steps use `--send` to dispatch commands to this daemon.
 > If the `menu-vision` call fails or returns no valid JSON: **HALT.**
 > Do not send any inputs. Retry the vision call or report the failure.
 
-Pass the vision prompt below as the task description. The subagent returns a
-single JSON object. No markdown fences, no explanations.
+The vision subagent is a **pure observer**. It receives no task context,
+no expected screen, no goal information. It catalogues what it sees and
+nothing more. The main agent owns all matching and decision-making.
+
+Pass the unified vision prompt below as the task description. The subagent
+returns a single JSON object. No markdown fences, no explanations.
 
 ```
-Look at this screenshot file: <PATH>
+Describe this screenshot from an NHL Legacy hockey game menu system.
 
-You are navigating the menu system of an NHL hockey video game. Look at this
-screenshot and respond ONLY with a single JSON object. No markdown fences, no
-explanations.
+Be exhaustive and precise. Report only what you observe — do not guess what
+"should" be there. If any text is partially obscured, note it.
 
-Detect the layout type first, then fill in the appropriate fields.
+1. List ALL visible text strings — titles, menu items, breadcrumb trails,
+   button hints, labels, body text. Leave nothing out.
+2. Describe the visual layout in words — positions, panels, visual hierarchy.
+3. Name the screen (the main title or heading visible). Note any breadcrumb
+   trail (e.g. "CUSTOMIZE > CREATION ZONE") if visible.
+4. List all selectable options and which one is highlighted.
+5. Note any button hints (A, B, X, Y, LB, RB, LT, RT) on screen.
 
-For simple menus (single column of options):
-{"screen": "<title or context, e.g. Main Menu, Settings, Pause Menu>",
- "layout": "list",
- "options": ["option1", "option2", ...],
- "selected": "<currently highlighted/selected option>",
- "gameplay": false,
- "nav_hints": ["<button prompts visible on screen>"],
- "confidence": "high|medium|low"}
+Respond ONLY with a single JSON object. No markdown fences.
 
-For complex layouts (multiple columns, tabs, split screens, multi-panel):
-{"screen": "<title or context>",
- "layout": "two_column|tabs|grid|custom",
- "regions": [
-   {"name": "<descriptive name, e.g. 'Left Team Roster', 'Tab Bar', 'Settings Panel'>",
-    "options": ["item1", "item2", ...],
-    "selected": "<highlighted item, or empty string if none>"}
- ],
- "description": "<free-form explanation: what each region is, the overall layout, and the current navigation state>",
- "gameplay": false,
- "nav_hints": ["<button prompts visible on screen>"],
- "confidence": "high|medium|low"}
-
-The "layout" field must be one of:
-- "list" — a single vertical list of options
-- "two_column" — two side-by-side lists (e.g., trade screen)
-- "tabs" — tab bar with content panels below
-- "grid" — a grid of selectable items
-- "custom" — anything else (use "description" to explain it)
-
-IMPORTANT: For complex layouts, always use "regions" to describe each distinct
-area and "description" to explain the overall layout. List ALL items visible in
-each region (at least what's on screen, even if many).
-
-CRITICAL: If you see an ice rink, players on ice, a puck, or crowd — set
-"gameplay": true and leave all other fields empty.
+{
+  "all_text": ["every", "distinct", "text", "string", "on", "screen"],
+  "screen_title": "Main title or heading text",
+  "breadcrumbs": "Path trail if visible, e.g. CUSTOMIZE > CREATION ZONE, or empty string",
+  "layout": "list|two_column|tabs|grid|custom",
+  "layout_description": "Free-text description of visual arrangement",
+  "options": ["selectable", "menu", "items"],
+  "selected": "highlighted option, or empty string if none",
+  "button_hints": ["A Select", "B Back"],
+  "gameplay": false,
+  "confidence": "high|medium|low",
+  "regions": [
+    {
+      "name": "descriptive region label",
+      "options": ["items", "in", "this", "region"],
+      "selected": "highlighted item or empty string"
+    }
+  ]
+}
 ```
 
-### EXECUTE-mode vision prompt (overrides shared prompt)
-
-In EXECUTE mode, the vision subagent answers a **match question**, not a
-cataloging question. The shared prompt above encourages freeform menu
-cataloging, which causes the parent agent to drift into EXPLORE mode.
-EXECUTE vision must compare the screenshot against an expected screen from
-`goal.json`.
-
-Use this template — substitute `<expected_screen>` with the current task's
-`pre_screen` or `post_screen`:
-
-```
-Look at this screenshot file: <PATH>
-
-I am executing a task in an NHL hockey video game. My goal.json task
-EXPECTS this screenshot to show: <expected_screen>
-
-Respond ONLY with a single JSON object. No markdown fences, no explanations.
-
-Answer the MATCH question FIRST:
-
-{"match": true|false,
- "screen": "<actual screen title/context>",
- "layout": "list|two_column|tabs|grid|custom",
- "options": ["<visible options>"],
- "selected": "<highlighted option>",
- "gameplay": false,
- "confidence": "high|medium|low",
- "actual_screen": "<only if match is false: what screen is this instead>"}
-
-CRITICAL:
-- If match is false, I must re-navigate. Accurate actual_screen is essential.
-- Do NOT catalog options out of curiosity. Answer the match question first.
-- If you see an ice rink, players, puck, or crowd: set "gameplay": true.
+Field rules:
+- `all_text`: every distinct text string on screen. Must include screen
+  titles, menu items, breadcrumb trails, button hints, labels, and body
+  text. Duplicates are OK but prefer deduplication.
+- `screen_title`: the primary heading/title. Empty string if none visible.
+- `breadcrumbs`: the breadcrumb trail if visible (e.g. "CUSTOMIZE > CREATION
+  ZONE"), or empty string.
+- `layout`: one of `list` (single vertical list), `two_column` (two
+  side-by-side panels), `tabs` (tab bar with content), `grid` (tiled
+  items), `custom` (anything else — explain in `layout_description`).
+- `layout_description`: free-text. Where elements are positioned, how many
+  panels/columns, visual hierarchy, what each region contains.
+- `options`: all selectable menu items or list entries. Empty array if none
+  (e.g. loading screen).
+- `selected`: the highlighted/focused option. Empty string if nothing is
+  highlighted or if the screen has no selectable items.
+- `button_hints`: any button prompts visible on screen (e.g. "A Select",
+  "B Back", "X Execute Move"). Empty array if none.
+- `gameplay`: set to `true` ONLY if you see an ice rink, players on ice,
+  a puck, or crowd. When `gameplay` is `true`, set `screen_title` to "",
+  `options` and `all_text` to `[]`, and `layout` to `"custom"`.
+- `confidence`: `high` if all text is clearly legible and the screen type
+  is unambiguous. `medium` if some text is obscured or the identity is
+  uncertain. `low` if the screen is heavily obscured, blurry, or you are
+  guessing.
+- `regions`: REQUIRED for `two_column`, `tabs`, and `grid` layouts.
+  Omit for `list` layouts unless there are distinct non-list regions.
+  Each region must have `name`, `options` (array of strings), and
+  `selected` (string). For `two_column`, exactly 2 regions.
 ```
 
 ### 6a. Screenshot naming convention
@@ -250,20 +240,39 @@ The tool validates the entry at write time — if it rejects the log, you have
 a structural problem (missing vision fields, invalid JSON response, etc.) and
 must HALT before sending any further inputs.
 
+#### Multi-input scripts are ALLOWED — inter-script verification is MANDATORY
+
+You MAY batch multiple inputs in a single `--send` script for well-mapped
+navigation sequences:
+
+```bash
+./target/debug/nhl-input --send 'scroll("dpad_down", 6, 300); wait(0.5); screenshot("step_N");'
+```
+
+The cycle is:
+
+```
+SCRIPT (ends with screenshot()) → menu-vision → log-step → next decision → SCRIPT → ...
+```
+
+NEVER:
+- Send a script without a terminal `screenshot()` call
+- Send a second script before the previous screenshot has been analyzed
+  by `menu-vision` AND logged via `nhl-input --log-step`
+- Chain two scripts back-to-back without vision+log between them
+
+#### Logging procedure
+
+The prompt sent to `menu-vision` is the exact unified vision prompt from §6
+with `<PATH>` substituted. **No task context, no expected screen, no goal.**
+
 **Step 1 — write the exact vision prompt to a file:**
 
 ```bash
 cat > /tmp/nhl_prompt.txt << 'PROMPT_EOF'
-Look at this screenshot file: screenshots/$RUN_ID/NNN_step_NNN.png
-
-I am executing a task in an NHL hockey video game. My goal.json task
-EXPECTS this screenshot to show: <expected_screen>
-
-Respond ONLY with a single JSON object. No markdown fences, no explanations.
-
-Answer the MATCH question FIRST:
-
-{"match": true|false, ...}
+Describe this screenshot from an NHL Legacy hockey game menu system.
+...
+{...}
 PROMPT_EOF
 ```
 
@@ -275,7 +284,7 @@ escape special characters — the content is recorded verbatim.
 
 ```bash
 cat > /tmp/nhl_response.txt << 'RESP_EOF'
-{"match":true,"screen":"CUSTOMIZE","layout":"list","options":["CREATION ZONE",...],"selected":"CREATION ZONE","gameplay":false,"confidence":"high"}
+{"all_text":["CUSTOMIZE","CREATION ZONE","CUSTOMIZE AI","...","A Select","B Back"],"screen_title":"CUSTOMIZE","breadcrumbs":"","layout":"list","layout_description":"Vertical menu list with header CUSTOMIZE at top, 9 options below, button hints bar at bottom","options":["CREATION ZONE","CUSTOMIZE AI","EA SPORTS MEDIA HUB","FAVORITE TEAM","OFFER CODE ENTRY","PROFILE MANAGEMENT","ROSTER MANAGEMENT","SAVE/LOAD/DELETE","SETTINGS"],"selected":"CREATION ZONE","button_hints":["A Select","B Back","Y Game Manual"],"gameplay":false,"confidence":"high"}
 RESP_EOF
 ```
 
@@ -291,16 +300,23 @@ nhl-input --log-step \
   --screenshot "screenshots/$RUN_ID/<NNN>_step_<N>.png" \
   --prompt-file /tmp/nhl_prompt.txt \
   --response-file /tmp/nhl_response.txt \
-  --assessment "<match_confirmed|mismatch|recovery|halt>" \
+  --assessment "<goal_match|goal_mismatch|inconsistent|recovery|halt>" \
   --decision "<navigate|recover|halt>" \
   --plan "<one-line summary of what input will be sent next and why>"
 ```
 
 | Field | Valid values | Meaning |
 |-------|-------------|---------|
-| `--assessment` | `match_confirmed`, `mismatch`, `recovery`, `halt` | Agent's verdict after cross-checking vision response against goal.json |
+| `--assessment` | `goal_match`, `goal_mismatch`, `inconsistent`, `recovery`, `halt` | Agent's verdict after consistency checks + goal comparison |
 | `--decision` | `navigate`, `recover`, `halt` | Whether to continue the plan, enter recovery, or stop |
 | `--plan` | Free text (one line) | What input will be sent next and why |
+
+Assessment meanings:
+- `goal_match` — vision description is internally consistent AND matches goal.json expectations
+- `goal_mismatch` — vision description is internally consistent but does NOT match the expected screen from goal.json
+- `inconsistent` — vision description is self-contradictory (Pass A consistency checks failed)
+- `recovery` — agent is executing the RECOVERY protocol
+- `halt` — agent is stopping (Tier 4 escalation or task abort)
 
 **If `--log-step` exits non-zero: HALT.** Do not send any inputs. Rectify
 the logging issue (missing fields, bad vision response, etc.) first.
@@ -444,19 +460,14 @@ sending any inputs to the game.
 
 **CRITICAL — writing pre_screen and post_screen:**
 
-The vision model cannot reliably distinguish between screens at different
-levels of the menu hierarchy that share the same name. For example,
-"Roster Management" appears as:
-- A list item in the CUSTOMIZE menu (alongside CREATION ZONE, SETTINGS, ...)
-- The Roster Management submenu (TEAM ROSTERS, PLAYER MOVEMENT, ...)
-- The SAVE/LOAD/DELETE screen (which has a Roster Management context header)
+The vision model now returns a pure description — it has no knowledge of
+your goal. The main agent must compare the vision response's `screen_title`,
+`options`, and `layout_description` against goal.json fields to determine
+if the screen matches expectations.
 
-A single name like `"pre_screen": "Roster Management"` WILL cause `"match":
-true` for all of these, sending you down the wrong path.
-
-**Always include an `expected_options` field** listing the menu items that
-should be visible. The vision model cross-checks this against what it sees.
-Include both in the template:
+**Always include `pre_screen_title` and `post_screen_title`** — the canonical
+screen name that the vision model's `screen_title` field should contain for
+a match. Alongside `pre_options` and `post_options` for secondary verification.
 
 ```json
 {
@@ -465,10 +476,12 @@ Include both in the template:
     {
       "id": "<short_kebab_case_label>",
       "description": "<human-readable description>",
-      "pre_screen": "<screen title — be specific, e.g. 'ROSTER MANAGEMENT entry in CUSTOMIZE'>",
+      "pre_screen_title": "<canonical screen name from map.md — e.g. MAIN MENU, CUSTOMIZE, ROSTER MANAGEMENT>",
+      "pre_screen": "<human-readable screen description>",
       "pre_options": ["<visible options that must appear on this screen>"],
       "actions": ["<high-level action 1>", "<high-level action 2>"],
-      "post_screen": "<screen title expected after this task succeeds>",
+      "post_screen_title": "<canonical screen name from map.md>",
+      "post_screen": "<human-readable screen description>",
       "post_options": ["<visible options that must appear on this screen>"],
       "status": "pending"
     }
@@ -491,9 +504,11 @@ Example with correct specificity:
     {
       "id": "load_roster",
       "description": "Load ROSTER1",
+      "pre_screen_title": "CUSTOMIZE",
       "pre_screen": "CUSTOMIZE — ROSTER MANAGEMENT option is highlighted",
       "pre_options": ["CREATION ZONE", "CUSTOMIZE AI", "EA SPORTS MEDIA HUB", "FAVORITE TEAM", "OFFER CODE ENTRY", "PROFILE MANAGEMENT", "ROSTER MANAGEMENT", "SAVE/LOAD/DELETE", "SETTINGS"],
       "actions": ["Navigate to SAVE/LOAD/DELETE", "Select LOAD → ROSTERS", "Select ROSTER1 file", "Confirm Proceed"],
+      "post_screen_title": "SAVE/LOAD/DELETE",
       "post_screen": "Load Roster — ROSTER1 loaded confirmation visible",
       "post_options": [],
       "status": "pending"
@@ -501,9 +516,11 @@ Example with correct specificity:
     {
       "id": "execute_trade",
       "description": "Trade 2 TBL players for 2 FLA players",
+      "pre_screen_title": "CUSTOMIZE",
       "pre_screen": "CUSTOMIZE — ROSTER MANAGEMENT option is highlighted",
       "pre_options": ["CREATION ZONE", "CUSTOMIZE AI", "EA SPORTS MEDIA HUB", "FAVORITE TEAM", "OFFER CODE ENTRY", "PROFILE MANAGEMENT", "ROSTER MANAGEMENT", "SAVE/LOAD/DELETE", "SETTINGS"],
       "actions": ["Navigate to ROSTER MANAGEMENT → PLAYER MOVEMENT", "Trade 2 TBL for 2 FLA via two-column trade screen", "Press X to execute"],
+      "post_screen_title": "ROSTER MANAGEMENT",
       "post_screen": "Roster Management submenu — trade confirmed",
       "post_options": ["TEAM ROSTERS", "PLAYER MOVEMENT", "EDIT LINES", "JERSEY NUMBERS", "SET DEFAULT ROSTERS", "DOWNLOAD ROSTERS"],
       "status": "pending"
@@ -511,9 +528,11 @@ Example with correct specificity:
     {
       "id": "save_roster",
       "description": "Save roster as TRADED_ROSTER",
+      "pre_screen_title": "CUSTOMIZE",
       "pre_screen": "CUSTOMIZE — SAVE/LOAD/DELETE option is highlighted",
       "pre_options": ["CREATION ZONE", "CUSTOMIZE AI", "EA SPORTS MEDIA HUB", "FAVORITE TEAM", "OFFER CODE ENTRY", "PROFILE MANAGEMENT", "ROSTER MANAGEMENT", "SAVE/LOAD/DELETE", "SETTINGS"],
       "actions": ["Navigate to SAVE", "Enter name TRADED_ROSTER", "Confirm save"],
+      "post_screen_title": "CUSTOMIZE",
       "post_screen": "CUSTOMIZE — save confirmation visible",
       "post_options": [],
       "status": "pending"
@@ -546,72 +565,116 @@ correctly, verifying with vision after each step.
 Use the button path from `map.md` Navigation Reference to reach the starting
 screen for task 1. The daemon and vision pipeline are already running.
 
+**First-launch dialog handling:** After pressing Start on the title screen,
+the game may present zero or more first-launch dialogs (Autosave Information,
+Profile Warning, Choose Your Favorite Team, Tutorial prompt). See `map.md`
+"First Launch Hazards" for recognition and dismissal instructions. These
+dialogs can appear in any order or not at all. After each `A`-press to
+dismiss, take a screenshot and verify with vision before sending the next
+input.
+
 ### Step 3: Execution loop
 
 For **each task** in `goal.json` (in order):
 
 #### 3a. PRE-CHECK
 
-Take a screenshot, run the EXECUTE vision prompt with `<expected_screen>` set
-to the task's `pre_screen`.
+Take a screenshot, run the unified vision prompt via `menu-vision`, and log
+the result via `nhl-input --log-step`.
 
-- **If `"match": true`:** Cross-check: do the returned `options` match the
-  task's `pre_options`? If the options list is wrong, treat this as
-  `"match": false`. If both name and options match:
-  1. **Log the result** — append to `screenshots/$RUN_ID/vision_log.jsonl`.
-  2. Proceed to the NAVIGATION inner loop (3b).
+Then perform two passes:
 
-- **If `"match": false`:** Log the discrepancy to
-  `screenshots/$RUN_ID/discrepancies.jsonl` (see "Vision discrepancy
-  tracking" below). Then navigate to the expected screen using the exact
-  button path from `map.md` Navigation Reference. Do not proceed until
-  both `"match": true` AND the options cross-check passes.
+**Pass A — Internal consistency (mandatory — before any goal comparison):**
+
+| # | Check | If fails |
+|---|-------|----------|
+| C1 | `selected` (if non-empty) appears in `options` | Assessment → `inconsistent`. Trigger INTERRUPT. |
+| C2 | Every string in `options` and `screen_title` appears in `all_text` (fuzzy, case-insensitive substring match). At minimum: `options` items and `screen_title` must each be contained somewhere in `all_text`. | Assessment → `inconsistent`. |
+| C3 | If `breadcrumbs` is non-empty, the last segment of the breadcrumb trail should contain `screen_title` (case-insensitive). | Downgrade confidence one level. |
+| C4 | `layout_description` must be semantically consistent with `layout`. For example: if `layout` is `"list"` but `layout_description` says "two side-by-side panels", that's a contradiction. | Downgrade confidence one level. |
+| C5 | If `layout` is `"list"` and `regions` is present, regions are harmless. If `layout` is `"two_column"`, `"tabs"`, or `"grid"`, `regions` MUST be present with options that collectively account for what's in `options`. | Downgrade confidence one level. |
+| C6 | `button_hints` should be plausible for the claimed screen. E.g. "X Execute Move" on a main menu is implausible, "A Select" / "B Back" is universal and always plausible. | Downgrade confidence one level. |
+| C7 | If `confidence` is `"high"` but 3+ of C1–C6 fail, override `confidence` to `"low"`. | Trigger INTERRUPT. |
+
+If Pass A produced `confidence: "low"` or triggered INTERRUPT: treat as the
+vision response being unreliable. Do NOT compare against goal.json yet.
+Enter RECOVERY protocol (§3d).
+
+**Pass B — Goal matching (only after Pass A passes):**
+
+Compare the vision response against the task's `pre_screen_title`,
+`pre_options`, and `pre_screen` from `goal.json`:
+
+1. **Screen title match**: Does `vision.screen_title` contain (case-insensitive
+   substring) the task's `pre_screen_title`?
+2. **Options match**: Do `vision.options` contain the task's `pre_options`
+   (fuzzy — at least 70% overlap)?
+3. **Layout match**: Does `vision.layout` match the expected layout for this
+   screen (from `map.md` or task context)?
+
+- **If all three pass**: Assessment → `goal_match`. Proceed to §3b
+  (NAVIGATION inner loop).
+- **If any fails**: Assessment → `goal_mismatch`. Navigate to the expected
+  screen using the exact button path from `map.md` Navigation Reference.
+  Do not proceed until both Pass A and Pass B pass.
 
 #### 3b. NAVIGATION inner loop
 
-**CAUTION — daemon input discipline:** The daemon can silently drop inputs
-when multiple `tap()` commands are batched into a single `--send` call. Send
-**exactly one button press per `--send`** so every step produces a screenshot
-you can verify. If you need ↓×6, send six separate `--send` commands.
+**CAUTION — daemon input discipline:** Multi-input scripts (e.g.
+`scroll("dpad_down", 6, 300)`) are allowed and encouraged for well-mapped
+sequences. Every script MUST end with `screenshot()` and the resulting
+image MUST be analyzed by `menu-vision` before ANY further inputs are sent.
+Never chain two scripts without vision+log between them.
 
 **GATE — vision liveness check:** The `menu-vision` subagent (`subagent_type="menu-vision"`) is
 the ONLY way to interpret a screenshot. The parent agent cannot view images.
 If a `menu-vision` call fails, returns empty, or returns non-JSON: **HALT
 immediately.** Do not press any buttons. The loop is: INPUT → SCREENSHOT →
-menu-vision → (parse JSON) → next decision. **No menu-vision response = no
-further inputs.**
+menu-vision → (parse JSON) → consistency checks → goal-match → log-step →
+next decision. **No menu-vision response = no further inputs.**
 
 For navigation within the task, follow this tight loop:
 
 1. **ANCHOR**: Re-read `screenshots/$RUN_ID/goal.json`. Confirm the current
-   task's `pre_screen` (start), `pre_options`, `post_screen` (destination),
-   and `post_options`. Re-open `map.md` Navigation Reference. You are
-   anchoring to known coordinates — do not guess from memory.
+   task's `pre_screen_title`, `pre_screen`, `pre_options`, `post_screen_title`,
+   `post_screen`, and `post_options`. Re-open `map.md` Navigation Reference.
+   You are anchoring to known coordinates — do not guess from memory.
 
-2. **CHECK**: Run the EXECUTE vision prompt via `menu-vision` with the
-   expected screen. You MUST receive a valid JSON object. If the subagent
-   call fails, returns empty, or returns non-JSON: **HALT.** Do not send
-   any inputs. Retry the vision call. Only proceed to step 3 once you have
-   a parseable JSON response. Check `"match"` and cross-check `"options"`
-   against expected options. If mismatch, you are off course — press `B`
-   to back up, re-read `goal.json`, and re-navigate from a known anchor
-   in `map.md`.
+2. **CHECK**: Run the unified vision prompt via `menu-vision` with NO task
+   context (the same prompt for every vision call). You MUST receive a valid
+   JSON object. If the subagent call fails, returns empty, or returns
+   non-JSON: **HALT.** Do not send any inputs. Retry the vision call.
+
+   Run **Pass A** consistency checks (C1–C7 from §3a) on the vision response.
+   If Pass A fails: treat as INTERRUPT (step 6). Do NOT attempt goal-matching
+   on an internally inconsistent response.
+
+   Run **Pass B** goal-matching against the current task's expected screen.
+   If goal-matching fails, you are off course — press `B` to back up,
+   re-read `goal.json`, and re-navigate from a known anchor in `map.md`.
 
 3. **PLAN**: Consult the `map.md` Navigation Reference table for the shortest
    button path to the destination. If no entry exists, use the vision result
    to decide the next single d-pad step toward the target option.
 
-4. **INPUT**: Send EXACTLY ONE button press plus wait + screenshot:
+   **Think critically about the vision response even when confidence is high.**
+   If `screen_title` says "Player Movement" but `all_text` includes "MEDIA HUB"
+   or `options` are `["MY HIGHLIGHTS", ...]`, these are contradictory. Flag
+   the response as `inconsistent` regardless of confidence level. The vision
+   model can hallucinate with high confidence — the structured fields are your
+   defense.
+
+4. **INPUT**: Send a script ending with `screenshot()`:
 
    ```bash
-   # Face buttons and d-pad (use tap):
+   # Single button:
    ./target/debug/nhl-input --send 'tap("<button>"); wait(<time>); screenshot("step_N");'
+
+   # Multi-button scroll (atomic within daemon — efficient for known counts):
+   ./target/debug/nhl-input --send 'scroll("dpad_down", 6, 300); wait(0.5); screenshot("step_N");'
 
    # Triggers (use tap_trigger — tap("rt") / tap("lt") will NOT work):
    ./target/debug/nhl-input --send 'tap_trigger("rt", 500); wait(0.5); screenshot("step_N");'
-
-   # Multi-tap navigation (use scroll instead of for-loops):
-   ./target/debug/nhl-input --send 'scroll("dpad_down", 6, 300); screenshot("step_N");'
    ```
 
    **IMPORTANT — Trigger discipline:** LT/RT are analog triggers, not digital
@@ -624,46 +687,53 @@ For navigation within the task, follow this tight loop:
    between releases. Valid directions: `"dpad_up"` / `"up"`, `"dpad_down"` /
    `"down"`, `"dpad_left"` / `"left"`, `"dpad_right"` / `"right"`.
 
-   Never batch multiple inputs. The screenshot after each step is your only
-   defense against drift.
-
-5. **VERIFY**: Run the EXECUTE vision prompt via `menu-vision` on the new
+5. **VERIFY**: Run the unified vision prompt via `menu-vision` on the new
    screenshot. Same halt rule as CHECK — you MUST receive a parseable JSON
-   response before sending any further inputs. Log the result to
-   `vision_log.jsonl`. Compare `"screen"` and `"options"` against the
-   expected intermediate screen. If they don't match what the planned step
-   should produce, treat as INTERRUPT (step 6).
+   response before sending any further inputs.
 
-6. **INTERRUPT**: If `"match"` is ever `false` or `"confidence"` is `"low"`,
-   **stop sending inputs immediately**. Do not press more buttons trying to
-   fix the situation — that drifts you further from the anchor.
+   Run **Pass A** consistency checks. If they pass, compare against the
+   expected intermediate screen from your plan. If the screen doesn't match
+   what the planned step should produce, treat as INTERRUPT (step 6).
+
+   Log the result via `nhl-input --log-step`.
+
+6. **INTERRUPT**: If Pass A consistency checks fail, or if Pass B goal-matching
+   fails and the screen is clearly not where you expect, **stop sending inputs
+   immediately**. Do not press more buttons trying to fix the situation — that
+   drifts you further from the anchor.
    Press `B` ONCE to back up one screen. Take a screenshot and verify you
    are at a well-known screen. Re-enter the loop from step 1 (ANCHOR) with
    the current `goal.json` and `map.md`. Do NOT abort the task — INTERRUPT
    is a normal navigation recovery step, not a terminal state.
 
-7. **REPEAT** from step 1 until `"match": true` on the `post_screen`,
-   confirmed by Step 3c (POST-CHECK).
+7. **REPEAT** from step 1 until Pass B goal-matching succeeds against the
+   task's `post_screen_title`, confirmed by §3c (POST-CHECK).
 
 #### 3c. POST-CHECK (MANDATORY)
 
-Take a screenshot, run the EXECUTE vision prompt with `<expected_screen>` set
-to the task's `post_screen`.
+Take a screenshot, run the unified vision prompt via `menu-vision`. Log the
+result.
 
-- **If `"match": true`:** Cross-check: do the returned `options` match the
-  task's `post_options`? The vision model can confuse similarly-named
-  screens — e.g. "Roster Management" as a CUSTOMIZE list item vs. the Roster
-  Management submenu itself. If the options list is wrong, treat this as
-  `"match": false`.
+Run **Pass A** consistency checks (C1–C7 from §3a). If Pass A fails: enter
+RECOVERY protocol (§3d). Do NOT skip tiers.
 
-  If both name and options match:
-  1. **Log the result** — append to `screenshots/$RUN_ID/vision_log.jsonl`.
+If Pass A passes, run **Pass B** goal-matching against the task's
+`post_screen_title` and `post_options`:
+
+1. `vision.screen_title` contains `post_screen_title` (case-insensitive
+   substring)
+2. `vision.options` have ≥70% overlap with `post_options` (if `post_options`
+   is non-empty)
+3. `vision.layout` matches the expected layout for the destination screen
+   (from `map.md`)
+
+- **If all three pass**: Assessment → `goal_match`.
+  1. Log the result via `nhl-input --log-step`.
   2. Mark the task `"status": "completed"` in `goal.json`.
 
-- **If `"match": false`:** Log the discrepancy to
-  `screenshots/$RUN_ID/discrepancies.jsonl`. Then enter the **RECOVERY
-  protocol** (step 3d). Do NOT skip tiers. Do NOT abort until you have
-  exhausted all tiers.
+- **If any fails**: Assessment → `goal_mismatch`. Log the discrepancy via
+  `nhl-input --log-step`. Then enter the **RECOVERY protocol** (§3d). Do NOT
+  skip tiers. Do NOT abort until you have exhausted all tiers.
 
 Update `goal.json` on disk after every status change.
 
@@ -672,10 +742,9 @@ Update `goal.json` on disk after every status change.
 **YOU ARE NOT ALLOWED TO ABORT A TASK without exhausting all four tiers.**
 Each tier must be attempted with screenshot verification before escalating.
 
-**Tier 1 — One-step back**: Press `B`, wait 1.5s, screenshot. Run the EXECUTE
-vision prompt with the current task's expected screen. Is this a screen you
-recognize from `map.md`? If yes, re-plan from here. If still not matching,
-go to Tier 2.
+**Tier 1 — One-step back**: Press `B`, wait 1.5s, screenshot. Run the unified
+vision prompt via `menu-vision`. Run Pass A checks. Is this a screen you
+recognize from `map.md`? If yes, re-plan from here. If not, go to Tier 2.
 
 **Tier 2 — Return to anchor**: Press `B` repeatedly (up to 10 times, with
 1.5s wait + screenshot after each) until you reach a well-known anchor:
@@ -706,8 +775,10 @@ When all tasks are marked `"completed"`:
 
 1. **Confirm**: Re-read `goal.json`. Is every task `"status": "completed"`?
 2. **Final screenshot**: Take one last screenshot.
-3. **Verify end state**: Run the EXECUTE vision prompt with the user's
-   intended end state as `<expected_screen>`. Is `"match": true`?
+3. **Verify end state**: Run the unified vision prompt via `menu-vision` with
+   the user's intended end state. Run Pass A checks, then compare
+   `screen_title` and `options` against the user's intended end state.
+   Is the agent at the correct screen?
 4. **If yes**: Set `"completion_gate": true` in `goal.json`. Report success
    to the user with evidence (relevant screenshot paths and what they show).
    Only then proceed to cleanup.
@@ -715,9 +786,14 @@ When all tasks are marked `"completed"`:
 
 ### Anti-drift rule
 
-If at any point the vision subagent's JSON reads like it is cataloging menu
-options rather than confirming a pre/post condition, **re-read `goal.json`**
-and re-anchor to the current task. The agent is drifting into EXPLORE mode.
+The vision subagent returns a pure description every time — there is no
+`match` field or cataloging mode distinction. The main agent must always:
+
+1. Run Pass A consistency checks on every vision response.
+2. Run Pass B goal-matching against the current task's expected screen.
+3. If the response seems contradictory (e.g. `screen_title` says one thing
+   but `all_text` or `options` tells a different story), flag as
+   `inconsistent` and trigger INTERRUPT, regardless of `confidence` level.
 
 ### Run log and diagnostics
 
@@ -730,10 +806,10 @@ prompt sent, vision response, assessment, decision, and plan.
 
 ```json
 {"step":18,"screenshot":"screenshots/.../018_step_018.png",
- "vision_prompt":"Look at this screenshot...",
- "vision_response":{"match":true,"screen":"CUSTOMIZE","options":[...],"confidence":"high"},
- "assessment":"match_confirmed","decision":"navigate",
- "plan":"Press A to enter SAVE/LOAD/DELETE submenu"}
+ "vision_prompt":"Describe this screenshot from an NHL Legacy hockey game...",
+ "vision_response":{"all_text":[...],"screen_title":"CUSTOMIZE","layout":"list","options":[...],"confidence":"high"},
+ "assessment":"goal_match","decision":"navigate",
+ "plan":"Press A to enter ROSTER MANAGEMENT submenu"}
 ```
 
 **`daemon_events.jsonl`** — written automatically by the daemon when started with
