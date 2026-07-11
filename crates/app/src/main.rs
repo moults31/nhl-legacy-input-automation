@@ -41,7 +41,6 @@ struct Cli {
     )]
     screenshot: Option<String>,
 
-    #[cfg(feature = "ocr-models")]
     #[arg(
         long,
         conflicts_with_all = ["script", "eval", "list_windows", "daemon", "send", "log_step"],
@@ -211,7 +210,6 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    #[cfg(feature = "ocr-models")]
     if let Some(ref ocr_path) = cli.ocr {
         return run_ocr(ocr_path);
     }
@@ -592,6 +590,22 @@ fn run_log_step(cli: &Cli) -> Result<()> {
                     "--analysis-source ocr requires vision_response to have ocr_source: true"
                 );
             }
+            if let Some(result) = ocr_sidecar.get("result") {
+                let all_text = result
+                    .get("all_text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let line_count = result
+                    .get("lines")
+                    .and_then(|v| v.as_array().map(|a| a.len()))
+                    .unwrap_or(0);
+                if all_text.trim().is_empty() && line_count == 0 {
+                    anyhow::bail!(
+                        "--analysis-source ocr requires OCR to have produced text. \
+                                   OCR succeeded but returned zero text lines."
+                    );
+                }
+            }
         }
         "vision_fallback" => {
             let has_ocr_source = response_value
@@ -602,6 +616,59 @@ fn run_log_step(cli: &Cli) -> Result<()> {
                 anyhow::bail!(
                     "--analysis-source vision_fallback requires vision_response to NOT have ocr_source"
                 );
+            }
+
+            let succeeded = ocr_sidecar
+                .get("succeeded")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if succeeded {
+                if let Some(ocr_result) = ocr_sidecar.get("result") {
+                    let ocr_raw = ocr_result
+                        .get("all_text")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let ocr_all_text = normalize_for_match(ocr_raw);
+
+                    let vision_title =
+                        match_normalize(response_value["screen_title"].as_str().unwrap_or(""));
+
+                    let vision_options: Vec<String> = response_value["options"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str().map(match_normalize))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
+                    let title_match =
+                        !vision_title.is_empty() && ocr_all_text.contains(&vision_title);
+
+                    let options_found = vision_options
+                        .iter()
+                        .filter(|opt| !opt.is_empty() && ocr_all_text.contains(opt.as_str()))
+                        .count();
+                    let overlap = if vision_options.is_empty() {
+                        0.0f64
+                    } else {
+                        options_found as f64 / vision_options.len() as f64
+                    };
+
+                    if title_match && overlap >= 0.5 {
+                        anyhow::bail!(
+                            "OCR was sufficient for this screen. \
+                             Use --analysis-source ocr instead of vision_fallback.\n\
+                             OCR-A1: screen title \"{}\" found in OCR all_text: {}\n\
+                             OCR-A2: {}/{} options ({}%) found in OCR all_text",
+                            vision_title,
+                            title_match,
+                            options_found,
+                            vision_options.len(),
+                            (overlap * 100.0) as u32,
+                        );
+                    }
+                }
             }
         }
         _ => unreachable!(),
@@ -802,8 +869,19 @@ fn run_daemon(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+fn normalize_for_match(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+        .collect::<String>()
+        .to_lowercase()
+}
+
+fn match_normalize(s: &str) -> String {
+    normalize_for_match(s)
+}
+
 fn validate_run_id_neutral(run_id: &str) -> Result<()> {
-    let valid = run_id.len() == 19
+    let valid = (run_id.len() == 19 || run_id.len() == 23)
         && run_id[..8].chars().all(|c| c.is_ascii_digit())
         && &run_id[8..9] == "_"
         && run_id[9..15].chars().all(|c| c.is_ascii_digit())
@@ -856,7 +934,6 @@ fn json_escape(s: &str) -> String {
     out
 }
 
-#[cfg(feature = "ocr-models")]
 fn run_ocr(path: &str) -> Result<()> {
     let path_buf = PathBuf::from(path);
     if !path_buf.exists() {
@@ -885,22 +962,22 @@ fn run_ocr(path: &str) -> Result<()> {
             eprintln!("ocr: {} text lines in {}ms", result.lines.len(), elapsed_ms);
             println!("{}", serde_json::to_string_pretty(&output)?);
 
-            write_ocr_sidecar(path, true, None)?;
+            write_ocr_sidecar(path, true, None, Some(&output))?;
             Ok(())
         }
         Err(e) => {
             let reason = format!("{e:#}");
-            write_ocr_sidecar(path, false, Some(&reason))?;
+            write_ocr_sidecar(path, false, Some(&reason), None)?;
             anyhow::bail!("OCR analysis failed for {path}: {reason}");
         }
     }
 }
 
-#[cfg(feature = "ocr-models")]
 fn write_ocr_sidecar(
     screenshot_path: &str,
     succeeded: bool,
     failure_reason: Option<&str>,
+    ocr_result: Option<&serde_json::Value>,
 ) -> Result<()> {
     let metadata = fs::metadata(screenshot_path)
         .with_context(|| format!("failed to read screenshot metadata: {}", screenshot_path))?;
@@ -921,6 +998,7 @@ fn write_ocr_sidecar(
         },
         "succeeded": succeeded,
         "failure_reason": failure_reason,
+        "result": ocr_result,
     });
 
     let sidecar_path = format!("{}.ocr.json", screenshot_path);

@@ -1,12 +1,11 @@
+use std::ffi::CString;
 use std::fs;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
-#[cfg(feature = "ocr-models")]
-use ocrs::OcrEngineParams;
-use ocrs::{ImageSource, OcrEngine, TextItem};
+use tesseract::plumbing::TessBaseApi;
 
 pub trait Observer: Send + Sync {
     fn is_connected(&self) -> bool;
@@ -261,79 +260,161 @@ impl ScreenCaptureObserver {
         Ok(path.to_string_lossy().to_string())
     }
 
-    fn extract_ocr(
-        engine: &OcrEngine,
+    fn get_or_init_tesseract() -> anyhow::Result<&'static Mutex<TessBaseApi>> {
+        static ENGINE: OnceLock<anyhow::Result<Mutex<TessBaseApi>>> = OnceLock::new();
+        match ENGINE.get_or_init(|| {
+            (|| -> anyhow::Result<Mutex<TessBaseApi>> {
+                let mut api = TessBaseApi::create();
+                let lang = CString::new("eng").unwrap();
+                api.init_2(None, Some(&lang))
+                    .map_err(|e| anyhow::anyhow!("Tesseract init_2 failed: {e:?}"))?;
+                Ok(Mutex::new(api))
+            })()
+        }) {
+            Ok(engine) => Ok(engine),
+            Err(e) => Err(anyhow::anyhow!("{}", e)),
+        }
+    }
+
+    fn ocr_image(
+        &self,
         rgb: &image::RgbImage,
-        (w, h): (u32, u32),
+        w: u32,
+        h: u32,
     ) -> anyhow::Result<(OcrResult, Option<usize>)> {
-        let img_source = ImageSource::from_bytes(rgb.as_raw(), (w, h))
-            .map_err(|e| anyhow::anyhow!("OCR: failed to create image source: {e}"))?;
-        let input = engine
-            .prepare_input(img_source)
-            .map_err(|e| anyhow::anyhow!("OCR: image preparation failed: {e}"))?;
-        let word_rects = engine
-            .detect_words(&input)
-            .map_err(|e| anyhow::anyhow!("OCR: text detection failed: {e}"))?;
-        let text_lines = engine.find_text_lines(&input, &word_rects);
-        let recognized = engine
-            .recognize_text(&input, &text_lines)
-            .map_err(|e| anyhow::anyhow!("OCR: text recognition failed: {e}"))?;
+        let api_lock = Self::get_or_init_tesseract()?;
+        let mut api = api_lock.lock().unwrap();
 
-        let mut result_lines = Vec::new();
-        let mut all_text = String::new();
+        let bpl = (w * 3) as i32;
+        api.set_image(rgb.as_raw(), w as i32, h as i32, 3, bpl)
+            .map_err(|e| anyhow::anyhow!("Tesseract set_image failed: {e:?}"))?;
 
-        for line_opt in recognized.iter().flatten() {
-            let rect = line_opt.bounding_rect();
-            let text = line_opt.to_string();
+        api.set_page_seg_mode(3);
+
+        api.recognize()
+            .map_err(|e| anyhow::anyhow!("Tesseract recognize failed: {e:?}"))?;
+
+        let tsv_text = api
+            .get_tsv_text(0)
+            .map_err(|e| anyhow::anyhow!("Tesseract get_tsv_text failed: {e:?}"))?;
+
+        let tsv_string = tsv_text.as_ref().to_string_lossy().into_owned();
+        Ok(Self::parse_tsv_output(&tsv_string, rgb, w, h))
+    }
+
+    fn parse_tsv_output(
+        tsv: &str,
+        rgb: &image::RgbImage,
+        w: u32,
+        h: u32,
+    ) -> (OcrResult, Option<usize>) {
+        let mut result_lines: Vec<OcrLine> = Vec::new();
+        let mut current_words: Vec<(i32, i32, i32, i32, String)> = Vec::new();
+        let mut prev_line_key: Option<(i32, i32, i32)> = None;
+
+        for line in tsv.lines().skip(1) {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let parts: Vec<&str> = trimmed.split('\t').collect();
+            if parts.len() < 12 {
+                continue;
+            }
+
+            let level: i32 = match parts[0].parse() {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if level != 5 {
+                continue;
+            }
+
+            let block: i32 = parts[2].parse().unwrap_or(0);
+            let par: i32 = parts[3].parse().unwrap_or(0);
+            let line_num: i32 = parts[4].parse().unwrap_or(0);
+            let key = (block, par, line_num);
+
+            if let Some(prev) = prev_line_key {
+                if prev != key {
+                    Self::flush_line(&mut result_lines, &mut current_words);
+                }
+            }
+
+            let left: i32 = parts[6].parse().unwrap_or(0);
+            let top: i32 = parts[7].parse().unwrap_or(0);
+            let width: i32 = parts[8].parse().unwrap_or(0);
+            let height: i32 = parts[9].parse().unwrap_or(0);
+            let text = parts[11..].join("\t");
+
             if text.trim().is_empty() {
                 continue;
             }
 
-            let ocr_rect = OcrRect {
-                left: rect.left(),
-                top: rect.top(),
-                right: rect.right(),
-                bottom: rect.bottom(),
-            };
+            current_words.push((left, top, left + width, top + height, text));
+            prev_line_key = Some(key);
+        }
 
-            let words: Vec<OcrWord> = line_opt
-                .words()
-                .map(|w| {
-                    let wr = w.bounding_rect();
-                    OcrWord {
-                        text: w.to_string(),
-                        rect: OcrRect {
-                            left: wr.left(),
-                            top: wr.top(),
-                            right: wr.right(),
-                            bottom: wr.bottom(),
-                        },
-                    }
-                })
-                .collect();
+        Self::flush_line(&mut result_lines, &mut current_words);
 
+        let mut all_text = String::new();
+        for line in &result_lines {
             if !all_text.is_empty() {
                 all_text.push('\n');
             }
-            all_text.push_str(&text);
-
-            result_lines.push(OcrLine {
-                text,
-                rect: ocr_rect,
-                words,
-            });
+            all_text.push_str(&line.text);
         }
 
         let selected_index = Self::find_selected_by_luminance(rgb, &result_lines, w, h);
 
-        Ok((
+        (
             OcrResult {
                 lines: result_lines,
                 all_text,
                 selected_index,
             },
             selected_index,
-        ))
+        )
+    }
+
+    fn flush_line(lines: &mut Vec<OcrLine>, words: &mut Vec<(i32, i32, i32, i32, String)>) {
+        if words.is_empty() {
+            return;
+        }
+
+        let line_text: Vec<&str> = words.iter().map(|(_, _, _, _, t)| t.as_str()).collect();
+        let line_text = line_text.join(" ");
+
+        let min_left = words.iter().map(|(l, _, _, _, _)| *l).min().unwrap_or(0);
+        let min_top = words.iter().map(|(_, t, _, _, _)| *t).min().unwrap_or(0);
+        let max_right = words.iter().map(|(_, _, r, _, _)| *r).max().unwrap_or(0);
+        let max_bottom = words.iter().map(|(_, _, _, b, _)| *b).max().unwrap_or(0);
+
+        let ocr_words: Vec<OcrWord> = words
+            .iter()
+            .map(|(l, t, r, b, txt)| OcrWord {
+                text: txt.clone(),
+                rect: OcrRect {
+                    left: *l,
+                    top: *t,
+                    right: *r,
+                    bottom: *b,
+                },
+            })
+            .collect();
+
+        lines.push(OcrLine {
+            text: line_text,
+            rect: OcrRect {
+                left: min_left,
+                top: min_top,
+                right: max_right,
+                bottom: max_bottom,
+            },
+            words: ocr_words,
+        });
+
+        words.clear();
     }
 
     fn find_selected_by_luminance(
@@ -361,33 +442,6 @@ impl ScreenCaptureObserver {
         }
 
         best_idx
-    }
-
-    #[cfg(feature = "ocr-models")]
-    fn get_or_init_engine() -> anyhow::Result<&'static OcrEngine> {
-        static DETECTION_BYTES: &[u8] =
-            include_bytes!(concat!(env!("OUT_DIR"), "/text-detection.rten"));
-        static RECOGNITION_BYTES: &[u8] =
-            include_bytes!(concat!(env!("OUT_DIR"), "/text-recognition.rten"));
-        static ENGINE: std::sync::OnceLock<anyhow::Result<OcrEngine>> = std::sync::OnceLock::new();
-
-        match ENGINE.get_or_init(|| {
-            (|| -> anyhow::Result<OcrEngine> {
-                let detection = rten::Model::load_static_slice(DETECTION_BYTES)
-                    .map_err(|e| anyhow::anyhow!("OCR: failed to load detection model: {e}"))?;
-                let recognition = rten::Model::load_static_slice(RECOGNITION_BYTES)
-                    .map_err(|e| anyhow::anyhow!("OCR: failed to load recognition model: {e}"))?;
-                OcrEngine::new(OcrEngineParams {
-                    detection_model: Some(detection),
-                    recognition_model: Some(recognition),
-                    ..Default::default()
-                })
-                .map_err(|e| anyhow::anyhow!("OCR: engine initialization failed: {e}"))
-            })()
-        }) {
-            Ok(engine) => Ok(engine),
-            Err(e) => Err(anyhow::anyhow!("{}", e)),
-        }
     }
 }
 
@@ -421,49 +475,25 @@ impl Observer for ScreenCaptureObserver {
     }
 
     fn ocr_analyze(&self) -> anyhow::Result<(OcrResult, Option<usize>)> {
-        #[cfg(feature = "ocr-models")]
-        {
-            let window = self.find_window().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "no window found matching substring '{}'",
-                    self.window_substring
-                )
-            })?;
-            let img = window
-                .capture_image()
-                .map_err(|e| anyhow::anyhow!("OCR: window capture failed: {e}"))?;
-            let rgb = image::DynamicImage::ImageRgba8(img).to_rgb8();
-            let (w, h) = rgb.dimensions();
-
-            let engine = Self::get_or_init_engine()?;
-            Self::extract_ocr(engine, &rgb, (w, h))
-        }
-        #[cfg(not(feature = "ocr-models"))]
-        {
-            Err(anyhow::anyhow!(
-                "OCR models not available. Rebuild with the 'ocr-models' feature enabled (default)."
-            ))
-        }
+        let window = self.find_window().ok_or_else(|| {
+            anyhow::anyhow!(
+                "no window found matching substring '{}'",
+                self.window_substring
+            )
+        })?;
+        let img = window
+            .capture_image()
+            .map_err(|e| anyhow::anyhow!("OCR: window capture failed: {e}"))?;
+        let rgb = image::DynamicImage::ImageRgba8(img).to_rgb8();
+        let (w, h) = rgb.dimensions();
+        self.ocr_image(&rgb, w, h)
     }
 
     fn ocr_analyze_from_path(&self, path: &str) -> anyhow::Result<(OcrResult, Option<usize>)> {
-        #[cfg(feature = "ocr-models")]
-        {
-            let img = image::open(path)
-                .map_err(|e| anyhow::anyhow!("OCR: failed to open image {path}: {e}"))?
-                .to_rgb8();
-            let (w, h) = img.dimensions();
-
-            let engine = Self::get_or_init_engine()?;
-            Self::extract_ocr(engine, &img, (w, h))
-        }
-        #[cfg(not(feature = "ocr-models"))]
-        let _path = path;
-        #[cfg(not(feature = "ocr-models"))]
-        {
-            Err(anyhow::anyhow!(
-                "OCR models not available. Rebuild with the 'ocr-models' feature enabled (default)."
-            ))
-        }
+        let img = image::open(path)
+            .map_err(|e| anyhow::anyhow!("OCR: failed to open image {path}: {e}"))?
+            .to_rgb8();
+        let (w, h) = img.dimensions();
+        self.ocr_image(&img, w, h)
     }
 }

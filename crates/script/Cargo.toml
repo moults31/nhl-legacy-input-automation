@@ -12,7 +12,3 @@ anyhow = "1"
 rhai = "1"
 ctrlc = "3"
 tracing = "0.1"
-
-[features]
-default = ["ocr-models"]
-ocr-models = ["nhl-observer/ocr-models"]

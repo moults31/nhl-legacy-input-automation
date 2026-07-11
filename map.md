@@ -492,6 +492,23 @@ set_axis("right_trigger", 0.0);
 wait(0.8);
 ```
 
+## OCR Engine
+
+Switched from `ocrs` (neural network, models baked at build time) to **tesseract** (C library, system-installed) in
+`crates/observer`. Tesseract is dramatically more reliable on game UI text.
+
+- **System deps**: `sudo apt install libtesseract-dev tesseract-ocr-eng`
+- **Crate**: `tesseract = "0.15"` — high-level Rust bindings. Uses `tesseract-plumbing` and `tesseract-sys`.
+- **Page segmentation mode**: `PSM_AUTO` (3). Works well for single and two-column menu layouts.
+- **Output**: Word-level bounding boxes via `TessBaseApi::get_tsv_text(0)`, parsed into `OcrLine`/`OcrWord`.
+- **Performance**: ~2-5s per screenshot (debug build). Native C code, faster than ocrs.
+- **Selected index detection**: `find_selected_by_luminance` still used to pick the brightest line.
+  Works best when the highlighted menu item has higher luminance than background.
+- **Accuracy on NHL Legacy menus**: Highly reliable. Extracts menu items ("PLAY", "CUSTOMIZE", "LOAD"),
+  save file names ("SEASON1", "AUTOSAVE2"), timestamps, breadcrumbs, and bottom bar hints.
+  Some background/stylized text noise is normal.
+- **Sidecar auto-creation**: `--ocr` auto-writes `<screenshot>.ocr.json` with provenance for `--log-step`.
+
 ## Operational Gotchas
 
 - **Title screen**: Requires Start to advance, not A. Other screens accept A.
@@ -503,9 +520,8 @@ wait(0.8);
 - **Triggers (LT/RT)**: Analog axes. `tap("rt")` / `tap("lt")` silently do
   nothing. Use `tap_trigger("rt", 500)` or `set_axis("right_trigger", 1.0)`.
   See Player Movement Operational Notes for detailed trigger usage.
-- **Run ID validation bug**: `validate_run_id_neutral` enforces `len() == 19`,
-  so only `_run` suffix (19 chars) is accepted. `_explore` (23 chars) is
-  rejected. Tracked in `crates/app/src/main.rs:662`.
+- **Run ID validation**: `validate_run_id_neutral` accepts both `_run` (19 chars)
+  and `_explore` (24 chars) suffixes. See `crates/app/src/main.rs:805`.
 
 ## Avoided Modes
 

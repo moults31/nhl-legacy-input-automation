@@ -159,7 +159,6 @@ pub fn run_script(
         });
     }
 
-    #[cfg(feature = "ocr-models")]
     {
         let obs = Arc::clone(&observer);
         engine.register_fn(
