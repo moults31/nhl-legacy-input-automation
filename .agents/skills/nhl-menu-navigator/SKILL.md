@@ -99,6 +99,14 @@ RUN_ID=$(date +%Y%m%d_%H%M%S)_run
 
 The screenshot directory will be `screenshots/$RUN_ID/`.
 
+**CRITICAL — RUN_ID naming discipline:**
+The RUN_ID MUST use the neutral pattern `$(date +%Y%m%d_%H%M%S)_run` for
+EXECUTE runs or `$(date +%Y%m%d_%H%M%S)_explore` for EXPLORE runs. Never
+append descriptive suffixes like `_trade_mtl_tor` or `_load_roster`. Task
+context belongs in `goal.json`, not in directory names. A descriptive
+directory name leaks goal information to the vision model through the
+`Screenshot:` header in the vision prompt and causes hallucination.
+
 ### 5. Start the daemon
 
 The daemon keeps the virtual Xbox controller alive between commands,
@@ -121,6 +129,23 @@ grep -q "ready for commands" screenshots/daemon.log && echo "daemon ready"
 ```
 
 All subsequent steps use `--send` to dispatch commands to this daemon.
+
+**NEVER pass `--no-require-logging` to the daemon.** This flag disables the
+step-logging enforcement gate and exists only for manual debugging outside
+the navigator skill. The daemon enforces that every `--send` command is
+preceded by a valid `--log-step` call for the previous screenshot. If you
+forget to log a step, the daemon will reject your next command with an
+error — that is a safety feature, not a bug.
+
+Verify that logging enforcement is active:
+
+```
+sleep 1
+grep -q "ready for commands" screenshots/daemon.log && echo "daemon ready"
+```
+
+If the daemon exits or fails to start, check `screenshots/daemon.log`. The
+enforcement gate is active by default — no extra flags are needed.
 
 ### 6. Vision interpretation (shared prompt — used by both EXPLORE and EXECUTE)
 
@@ -149,7 +174,7 @@ Pass the unified vision prompt below as the task description. The subagent
 returns a single JSON object. No markdown fences, no explanations.
 
 ```
-Screenshot: screenshots/$RUN_ID/<NNN>_step_<N>.png
+Screenshot: <NNN>_step_<N>.png
 
 Describe this screenshot from an NHL Legacy hockey game menu system.
 
@@ -318,7 +343,7 @@ context, no expected screen, no goal.**
 
 ```bash
 cat > /tmp/nhl_prompt.txt << 'PROMPT_EOF'
-Screenshot: screenshots/$RUN_ID/001_step_001.png
+Screenshot: 001_step_001.png
 
 Describe this screenshot from an NHL Legacy hockey game menu system.
 

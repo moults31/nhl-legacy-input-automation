@@ -20,7 +20,24 @@ every screenshot into context. The merge report tells you where to look.
 
 ## Workflow
 
-### Step 0: Gather inputs
+### Step 0: Capability Check
+
+Before any analysis, determine if this model can read images:
+
+1. Try Read on any PNG file in the run directory.
+2. If the model reports "Cannot read image" or equivalent, you are in
+   **TEXT-ONLY mode**:
+   - Do NOT attempt visual verification of screenshots.
+   - Do NOT claim to have viewed screenshots in your analysis.
+   - Rely solely on: `daemon_events.jsonl` timestamps, `run_log.jsonl`
+     entries (if present), `goal.json` structure, and `map.md` cross-reference.
+   - All claims about screen content MUST be prefixed with
+     `[INFERRED — NOT VISUALLY VERIFIED]`.
+3. If the model CAN read images, use only `Task` with
+   `subagent_type="menu-vision"` for each flagged screenshot. Do NOT use
+   `Read` directly on PNGs — it will fail on most models.
+
+### Step 1: Gather inputs
 
 The user must provide a run directory path:
 
@@ -31,7 +48,7 @@ screenshots/<RUN_ID>/
 The directory must contain at minimum `daemon_events.jsonl` and
 `run_log.jsonl`. If `goal.json` exists, the task context will be included.
 
-### Step 1: Run the merge + hotspot detection
+### Step 2: Run the merge + hotspot detection
 
 ```bash
 python3 scripts/generate-report.py screenshots/<RUN_ID>
@@ -46,7 +63,7 @@ This produces:
 recovery count, long pauses, recovery spirals, and wrong-menu entries without
 you needing to parse the full merged data.
 
-### Step 2: Load the hotspot summary and goal
+### Step 3: Load the hotspot summary and goal
 
 Read these two JSON files:
 
@@ -58,7 +75,7 @@ screenshots/<RUN_ID>/goal.json           (if it exists)
 Do NOT read `run_log.jsonl` or `daemon_events.jsonl` directly — use the
 summary.
 
-### Step 3: Context-free hotspot triage
+### Step 4: Context-free hotspot triage
 
 Before viewing ANY screenshots, classify each hotspot by severity:
 
@@ -68,7 +85,7 @@ Before viewing ANY screenshots, classify each hotspot by severity:
 | **Major** | Long pauses > 60s (agent was confused), 2+ mismatches on the same expected screen, low-confidence vision responses |
 | **Minor** | Single mismatches resolved in 1 step, long pauses 30-60s, one-off B-presses that recovered correctly |
 
-### Step 4: Per-hotspot diagnosis (with targeted screenshots)
+### Step 5: Per-hotspot diagnosis (with targeted screenshots)
 
 For each **Critical** and **Major** hotspot, do this (skip Minor unless
 time/context permits):
@@ -119,7 +136,7 @@ Choose ONE root cause per hotspot:
 | **Map.md missing path** | Navigation Reference has no entry for the attempted destination | Run EXPLORE mode to map the path, then update map.md |
 | **Menu wrap-around** | Agent scrolled past the last option and wrapped to the top (or vice versa) | Document the wrap behavior in map.md; prefer upward scroll if close to top |
 
-### Step 5: Produce the analysis report
+### Step 6: Produce the analysis report
 
 Write to `screenshots/<RUN_ID>/analysis.md`:
 
@@ -170,7 +187,7 @@ not active for these steps (added mid-run, or agent missed the log-step call).
 Review the nhl-menu-navigator skill to ensure logging is enforced at every step.
 ```
 
-### Step 6: Report findings to the user
+### Step 7: Report findings to the user
 
 Summarize the top 3 findings with specific, actionable fixes. Do NOT dump the
 entire analysis — highlight what matters most.
