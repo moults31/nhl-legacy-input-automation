@@ -21,3 +21,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 xcap = "0.9"
 chrono = "0.4.45"
+
+[features]
+default = ["ocr-models"]
+ocr-models = ["nhl-observer/ocr-models", "nhl-script/ocr-models"]

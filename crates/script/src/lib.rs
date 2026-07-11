@@ -159,6 +159,7 @@ pub fn run_script(
         });
     }
 
+    #[cfg(feature = "ocr-models")]
     {
         let obs = Arc::clone(&observer);
         engine.register_fn(
@@ -166,7 +167,7 @@ pub fn run_script(
             move |path: &str| -> Result<rhai::Dynamic, String> {
                 let (result, _selected) = obs
                     .ocr_analyze_from_path(path)
-                    .ok_or_else(|| format!("OCR analysis failed for: {path}"))?;
+                    .map_err(|e| format!("{e:#}"))?;
                 let mut map = rhai::Map::new();
                 map.insert("all_text".into(), rhai::Dynamic::from(result.all_text));
                 map.insert(

@@ -41,6 +41,7 @@ struct Cli {
     )]
     screenshot: Option<String>,
 
+    #[cfg(feature = "ocr-models")]
     #[arg(
         long,
         conflicts_with_all = ["script", "eval", "list_windows", "daemon", "send", "log_step"],
@@ -210,6 +211,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    #[cfg(feature = "ocr-models")]
     if let Some(ref ocr_path) = cli.ocr {
         return run_ocr(ocr_path);
     }
@@ -854,6 +856,7 @@ fn json_escape(s: &str) -> String {
     out
 }
 
+#[cfg(feature = "ocr-models")]
 fn run_ocr(path: &str) -> Result<()> {
     let path_buf = PathBuf::from(path);
     if !path_buf.exists() {
@@ -867,7 +870,7 @@ fn run_ocr(path: &str) -> Result<()> {
     let elapsed_ms = start.elapsed().as_millis();
 
     match ocr_result {
-        Some((result, _selected)) => {
+        Ok((result, _selected)) => {
             let selected_text = _selected
                 .and_then(|idx| result.lines.get(idx))
                 .map(|line| line.text.as_str());
@@ -885,13 +888,15 @@ fn run_ocr(path: &str) -> Result<()> {
             write_ocr_sidecar(path, true, None)?;
             Ok(())
         }
-        None => {
-            write_ocr_sidecar(path, false, Some("OCR engine failed to process image"))?;
-            anyhow::bail!("OCR analysis failed for: {}", path);
+        Err(e) => {
+            let reason = format!("{e:#}");
+            write_ocr_sidecar(path, false, Some(&reason))?;
+            anyhow::bail!("OCR analysis failed for {path}: {reason}");
         }
     }
 }
 
+#[cfg(feature = "ocr-models")]
 fn write_ocr_sidecar(
     screenshot_path: &str,
     succeeded: bool,

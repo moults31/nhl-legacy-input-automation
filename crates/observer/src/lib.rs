@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use ocrs::{ImageSource, OcrEngine, OcrEngineParams, TextItem};
+#[cfg(feature = "ocr-models")]
+use ocrs::OcrEngineParams;
+use ocrs::{ImageSource, OcrEngine, TextItem};
 
 pub trait Observer: Send + Sync {
     fn is_connected(&self) -> bool;
@@ -23,11 +25,11 @@ pub trait Observer: Send + Sync {
             "screenshots not supported by this observer"
         ))
     }
-    fn ocr_analyze(&self) -> Option<(OcrResult, Option<usize>)> {
-        None
+    fn ocr_analyze(&self) -> anyhow::Result<(OcrResult, Option<usize>)> {
+        Err(anyhow::anyhow!("OCR not available"))
     }
-    fn ocr_analyze_from_path(&self, _path: &str) -> Option<(OcrResult, Option<usize>)> {
-        None
+    fn ocr_analyze_from_path(&self, _path: &str) -> anyhow::Result<(OcrResult, Option<usize>)> {
+        Err(anyhow::anyhow!("OCR not available"))
     }
 }
 
@@ -101,7 +103,6 @@ pub struct ScreenCaptureObserver {
     counter: AtomicU32,
     watch_path: Mutex<Option<PathBuf>>,
     json_log: Mutex<Option<Arc<Mutex<BufWriter<fs::File>>>>>,
-    ocr_engine: Mutex<Option<OcrEngine>>,
 }
 
 impl ScreenCaptureObserver {
@@ -113,7 +114,6 @@ impl ScreenCaptureObserver {
             counter: AtomicU32::new(0),
             watch_path: Mutex::new(None),
             json_log: Mutex::new(None),
-            ocr_engine: Mutex::new(None),
         }
     }
 
@@ -265,12 +265,19 @@ impl ScreenCaptureObserver {
         engine: &OcrEngine,
         rgb: &image::RgbImage,
         (w, h): (u32, u32),
-    ) -> Option<(OcrResult, Option<usize>)> {
-        let img_source = ImageSource::from_bytes(rgb.as_raw(), (w, h)).ok()?;
-        let input = engine.prepare_input(img_source).ok()?;
-        let word_rects = engine.detect_words(&input).ok()?;
+    ) -> anyhow::Result<(OcrResult, Option<usize>)> {
+        let img_source = ImageSource::from_bytes(rgb.as_raw(), (w, h))
+            .map_err(|e| anyhow::anyhow!("OCR: failed to create image source: {e}"))?;
+        let input = engine
+            .prepare_input(img_source)
+            .map_err(|e| anyhow::anyhow!("OCR: image preparation failed: {e}"))?;
+        let word_rects = engine
+            .detect_words(&input)
+            .map_err(|e| anyhow::anyhow!("OCR: text detection failed: {e}"))?;
         let text_lines = engine.find_text_lines(&input, &word_rects);
-        let recognized = engine.recognize_text(&input, &text_lines).ok()?;
+        let recognized = engine
+            .recognize_text(&input, &text_lines)
+            .map_err(|e| anyhow::anyhow!("OCR: text recognition failed: {e}"))?;
 
         let mut result_lines = Vec::new();
         let mut all_text = String::new();
@@ -319,7 +326,7 @@ impl ScreenCaptureObserver {
 
         let selected_index = Self::find_selected_by_luminance(rgb, &result_lines, w, h);
 
-        Some((
+        Ok((
             OcrResult {
                 lines: result_lines,
                 all_text,
@@ -355,6 +362,33 @@ impl ScreenCaptureObserver {
 
         best_idx
     }
+
+    #[cfg(feature = "ocr-models")]
+    fn get_or_init_engine() -> anyhow::Result<&'static OcrEngine> {
+        static DETECTION_BYTES: &[u8] =
+            include_bytes!(concat!(env!("OUT_DIR"), "/text-detection.rten"));
+        static RECOGNITION_BYTES: &[u8] =
+            include_bytes!(concat!(env!("OUT_DIR"), "/text-recognition.rten"));
+        static ENGINE: std::sync::OnceLock<anyhow::Result<OcrEngine>> = std::sync::OnceLock::new();
+
+        match ENGINE.get_or_init(|| {
+            (|| -> anyhow::Result<OcrEngine> {
+                let detection = rten::Model::load_static_slice(DETECTION_BYTES)
+                    .map_err(|e| anyhow::anyhow!("OCR: failed to load detection model: {e}"))?;
+                let recognition = rten::Model::load_static_slice(RECOGNITION_BYTES)
+                    .map_err(|e| anyhow::anyhow!("OCR: failed to load recognition model: {e}"))?;
+                OcrEngine::new(OcrEngineParams {
+                    detection_model: Some(detection),
+                    recognition_model: Some(recognition),
+                    ..Default::default()
+                })
+                .map_err(|e| anyhow::anyhow!("OCR: engine initialization failed: {e}"))
+            })()
+        }) {
+            Ok(engine) => Ok(engine),
+            Err(e) => Err(anyhow::anyhow!("{}", e)),
+        }
+    }
 }
 
 impl Observer for ScreenCaptureObserver {
@@ -386,31 +420,50 @@ impl Observer for ScreenCaptureObserver {
         self.capture_and_save(label, true)
     }
 
-    fn ocr_analyze(&self) -> Option<(OcrResult, Option<usize>)> {
-        let window = self.find_window()?;
-        let img = window.capture_image().ok()?;
-        let rgb = image::DynamicImage::ImageRgba8(img).to_rgb8();
-        let (w, h) = rgb.dimensions();
+    fn ocr_analyze(&self) -> anyhow::Result<(OcrResult, Option<usize>)> {
+        #[cfg(feature = "ocr-models")]
+        {
+            let window = self.find_window().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no window found matching substring '{}'",
+                    self.window_substring
+                )
+            })?;
+            let img = window
+                .capture_image()
+                .map_err(|e| anyhow::anyhow!("OCR: window capture failed: {e}"))?;
+            let rgb = image::DynamicImage::ImageRgba8(img).to_rgb8();
+            let (w, h) = rgb.dimensions();
 
-        let mut guard = self.ocr_engine.lock().ok()?;
-        if guard.is_none() {
-            *guard = Some(OcrEngine::new(OcrEngineParams::default()).ok()?);
+            let engine = Self::get_or_init_engine()?;
+            Self::extract_ocr(engine, &rgb, (w, h))
         }
-        let engine = guard.as_ref().unwrap();
-
-        Self::extract_ocr(engine, &rgb, (w, h))
+        #[cfg(not(feature = "ocr-models"))]
+        {
+            Err(anyhow::anyhow!(
+                "OCR models not available. Rebuild with the 'ocr-models' feature enabled (default)."
+            ))
+        }
     }
 
-    fn ocr_analyze_from_path(&self, path: &str) -> Option<(OcrResult, Option<usize>)> {
-        let img = image::open(path).ok()?.to_rgb8();
-        let (w, h) = img.dimensions();
+    fn ocr_analyze_from_path(&self, path: &str) -> anyhow::Result<(OcrResult, Option<usize>)> {
+        #[cfg(feature = "ocr-models")]
+        {
+            let img = image::open(path)
+                .map_err(|e| anyhow::anyhow!("OCR: failed to open image {path}: {e}"))?
+                .to_rgb8();
+            let (w, h) = img.dimensions();
 
-        let mut guard = self.ocr_engine.lock().ok()?;
-        if guard.is_none() {
-            *guard = Some(OcrEngine::new(OcrEngineParams::default()).ok()?);
+            let engine = Self::get_or_init_engine()?;
+            Self::extract_ocr(engine, &img, (w, h))
         }
-        let engine = guard.as_ref().unwrap();
-
-        Self::extract_ocr(engine, &img, (w, h))
+        #[cfg(not(feature = "ocr-models"))]
+        let _path = path;
+        #[cfg(not(feature = "ocr-models"))]
+        {
+            Err(anyhow::anyhow!(
+                "OCR models not available. Rebuild with the 'ocr-models' feature enabled (default)."
+            ))
+        }
     }
 }
