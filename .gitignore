@@ -9,3 +9,4 @@
 .idea/
 .vscode/
 /screenshots/
+__pycache__/
