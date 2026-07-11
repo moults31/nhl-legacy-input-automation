@@ -116,7 +116,7 @@ eliminating the 3s warmup on every step. Start it once in the background:
 nohup ./target/debug/nhl-input --daemon \
   --run-id "$RUN_ID" \
   --window-substring "nhllegacy" \
-  --watch screenshots/latest.png \
+  --watch _screenshot.png \
   --log-json \
   > screenshots/daemon.log 2>&1 &
 ```
@@ -174,7 +174,7 @@ Pass the unified vision prompt below as the task description. The subagent
 returns a single JSON object. No markdown fences, no explanations.
 
 ```
-Screenshot: <NNN>_step_<N>.png
+Screenshot: _screenshot.png
 
 Describe this screenshot from an NHL Legacy hockey game menu system.
 
@@ -213,9 +213,10 @@ Respond ONLY with a single JSON object. No markdown fences.
 ```
 
 **CRITICAL — Prompt format discipline:**
-- The `Screenshot:` line at the top is the ONLY variable substitution.
-  Substitute `<NNN>_step_<N>` with the actual step filename. Never add
-  or change any other text in the prompt.
+- The `Screenshot:` line at the top is the ONLY place the filename appears.
+  It always reads `Screenshot: _screenshot.png` — the daemon's `--watch` flag
+  keeps this file up to date with the latest screenshot. Never change this
+  line or add any other text to the prompt.
 - This prompt is the EXACT text you pass as the `prompt` parameter to
   the `Task` tool with `subagent_type="menu-vision"`. Copy it verbatim.
 - `--log-step` will REJECT any prompt containing banned patterns:
@@ -239,7 +240,7 @@ the exhaustive `all_text` requirement and focuses on structured fields
 needed for matching and navigation:
 
 ```
-Screenshot: <NNN>_step_<N>.png
+Screenshot: _screenshot.png
 
 Describe this NHL Legacy hockey game menu screenshot.
 Report ONLY what you observe.
@@ -348,6 +349,13 @@ identity is assigned AFTER `menu-vision` returns.
 Never label a screenshot based on intent or what you expect the screen to
 show. You do not know what screen you are on until `menu-vision` confirms it.
 
+**How screenshots reach the subagent:** The daemon is started with
+`--watch _screenshot.png` (see step 5). After every `screenshot()` call, the
+daemon copies the latest image to `_screenshot.png` at the repo root. The
+vision prompt always references this file. Your `--send` scripts still write
+per-step screenshots to the run directory for diagnostics — the `--watch` file
+is an always-up-to-date copy just for the subagent.
+
 ### 6b. Mandatory per-step logging
 
 After every `menu-vision` call, log one line to `screenshots/$RUN_ID/run_log.jsonl`
@@ -386,14 +394,14 @@ NEVER:
 #### Logging procedure
 
 The prompt sent to `menu-vision` is the exact unified vision prompt from §6
-with `<NNN>_step_<N>` substituted for the screenshot filename. **No task
+with `Screenshot: _screenshot.png` (the daemon's `--watch` file). **No task
 context, no expected screen, no goal.**
 
 **Step 1 — write the exact vision prompt to a file:**
 
 ```bash
 cat > /tmp/nhl_prompt.txt << 'PROMPT_EOF'
-Screenshot: 001_step_001.png
+Screenshot: _screenshot.png
 
 Describe this screenshot from an NHL Legacy hockey game menu system.
 
