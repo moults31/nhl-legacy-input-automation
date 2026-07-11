@@ -83,6 +83,10 @@ impl ScreenCaptureObserver {
         *self.json_log.lock().unwrap() = Some(writer);
     }
 
+    pub fn counter(&self) -> u32 {
+        self.counter.load(Ordering::SeqCst)
+    }
+
     fn find_window(&self) -> Option<xcap::Window> {
         let all_windows = xcap::Window::all().ok()?;
         let sub_lower = self.window_substring.to_lowercase();

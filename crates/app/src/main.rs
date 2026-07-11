@@ -133,6 +133,16 @@ struct Cli {
         help = "With --daemon: write command and screenshot events to daemon_events.jsonl"
     )]
     log_json: bool,
+
+    #[arg(
+        long,
+        help = "With --daemon: disable step-logging enforcement. \
+                Without this flag, the daemon rejects --send commands if \
+                the previous step was not logged via --log-step. \
+                This flag exists for manual debugging; never use it in \
+                automated navigation."
+    )]
+    no_require_logging: bool,
 }
 
 fn main() -> Result<()> {
@@ -295,6 +305,38 @@ fn run_log_step(cli: &Cli) -> Result<()> {
             );
         }
     }
+
+    // Validate the Screenshot: header line in the prompt. It must contain only
+    // a bare filename (NNN_step_N.png), not a directory path. Including the
+    // run_id directory in the path leaks task context to the vision model and
+    // causes hallucination.
+    for line in prompt_text.lines() {
+        if let Some(filename) = line.strip_prefix("Screenshot: ") {
+            let filename = filename.trim();
+            if filename.is_empty() {
+                anyhow::bail!(
+                    "vision prompt 'Screenshot:' header must specify a filename \
+                     (e.g. 'Screenshot: 001_step_001.png'), got: {:?}",
+                    line
+                );
+            }
+            if filename.contains('/') {
+                anyhow::bail!(
+                    "vision prompt 'Screenshot:' header must contain ONLY a bare \
+                     filename (e.g. 'Screenshot: 001_step_001.png'), not a full \
+                     path. Including a directory path leaks run_id context to the \
+                     vision model. Got: {:?}",
+                    filename
+                );
+            }
+            break;
+        }
+    }
+
+    // Validate RUN_ID neutrality. Descriptive suffixes like _trade_mtl_tor
+    // leak task context into directory names, which the vision model can
+    // discover through the screenshot path in daemon_events.jsonl diagnostics.
+    validate_run_id_neutral(run_id)?;
 
     let response_text = fs::read_to_string(response_file)
         .with_context(|| format!("failed to read response file: {response_file}"))?;
@@ -475,6 +517,7 @@ fn run_daemon(cli: &Cli) -> Result<()> {
     }
 
     let screen_observer = Arc::new(ScreenCaptureObserver::new(&cli.window_substring));
+    let sc_observer_for_counter = Arc::clone(&screen_observer);
 
     if let Some(ref run_id) = cli.run_id {
         screen_observer.set_run_id(run_id);
@@ -552,6 +595,41 @@ fn run_daemon(cli: &Cli) -> Result<()> {
                     }
                 }
 
+                if !cli.no_require_logging {
+                    if let Some(ref run_id) = cli.run_id {
+                        let log_path = PathBuf::from("screenshots")
+                            .join(run_id)
+                            .join("run_log.jsonl");
+                        let log_count = if log_path.exists() {
+                            fs::read_to_string(&log_path)
+                                .unwrap_or_default()
+                                .lines()
+                                .filter(|l| !l.trim().is_empty())
+                                .count()
+                        } else {
+                            0
+                        };
+                        let screenshot_count = sc_observer_for_counter.counter();
+                        if screenshot_count.saturating_sub(log_count as u32) >= 2 {
+                            let msg = format!(
+                                "UNLOGGED_STEP: Must call --log-step before sending next command. \
+                                 screenshots_taken={screenshot_count}, logged_steps={log_count}"
+                            );
+                            error!(%msg, "rejecting command due to logging enforcement");
+                            let response = serde_json::json!({
+                                "ok": false,
+                                "err": msg,
+                            });
+                            if let Ok(canonical) = serde_json::to_string(&response) {
+                                let _ = stream.write_all(canonical.as_bytes());
+                                let _ = stream.write_all(b"\n");
+                                let _ = stream.flush();
+                            }
+                            continue;
+                        }
+                    }
+                }
+
                 let result = run_script(script, Arc::clone(&controller), Arc::clone(&observer));
 
                 let response = match result {
@@ -578,6 +656,24 @@ fn run_daemon(cli: &Cli) -> Result<()> {
 
     let _ = fs::remove_file(&cli.socket);
     info!("daemon shut down");
+    Ok(())
+}
+
+fn validate_run_id_neutral(run_id: &str) -> Result<()> {
+    let valid = run_id.len() == 19
+        && run_id[..8].chars().all(|c| c.is_ascii_digit())
+        && &run_id[8..9] == "_"
+        && run_id[9..15].chars().all(|c| c.is_ascii_digit())
+        && (&run_id[15..] == "_run" || &run_id[15..] == "_explore");
+    if !valid {
+        anyhow::bail!(
+            "invalid RUN_ID: {:?}. RUN_ID must use the neutral pattern \
+             YYYYMMDD_HHMMSS_run or YYYYMMDD_HHMMSS_explore. \
+             Descriptive suffixes like _trade_mtl_tor leak task context \
+             to the vision model and cause hallucination.",
+            run_id
+        );
+    }
     Ok(())
 }
 
