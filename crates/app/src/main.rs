@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -134,6 +134,20 @@ struct Cli {
         help = "One-line summary of what input will be sent next and why"
     )]
     plan: Option<String>,
+
+    #[arg(
+        long,
+        requires = "log_step",
+        help = "Path to the .ocr.json sidecar written by --ocr. Required for provenance tracking."
+    )]
+    ocr_file: Option<String>,
+
+    #[arg(
+        long,
+        requires = "log_step",
+        help = "Analysis source: ocr (OCR was sufficient) or vision_fallback (OCR was attempted, vision model used)"
+    )]
+    analysis_source: Option<String>,
 
     #[arg(
         long,
@@ -270,6 +284,19 @@ fn run_log_step(cli: &Cli) -> Result<()> {
         .plan
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("--plan is required"))?;
+    let ocr_file = cli
+        .ocr_file
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("--ocr-file is required"))?;
+    let analysis_source = cli
+        .analysis_source
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("--analysis-source is required"))?;
+
+    let valid_sources = ["ocr", "vision_fallback"];
+    if !valid_sources.contains(&analysis_source.as_str()) {
+        anyhow::bail!("--analysis-source must be one of: {:?}", valid_sources);
+    }
 
     let valid_assessments = [
         "goal_match",
@@ -486,6 +513,103 @@ fn run_log_step(cli: &Cli) -> Result<()> {
         }
     }
 
+    // --- OCR provenance validation ---
+
+    let ocr_sidecar_text = fs::read_to_string(ocr_file)
+        .with_context(|| format!("failed to read OCR file: {}", ocr_file))?;
+    let ocr_sidecar: Value = serde_json::from_str(&ocr_sidecar_text)
+        .with_context(|| format!("OCR file is not valid JSON: {}", ocr_file))?;
+
+    let provenance = ocr_sidecar
+        .get("provenance")
+        .ok_or_else(|| anyhow::anyhow!("OCR file missing 'provenance' field"))?;
+    let sidecar_path = provenance
+        .get("screenshot_path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("OCR provenance missing 'screenshot_path'"))?;
+    let sidecar_size = provenance
+        .get("screenshot_size")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| anyhow::anyhow!("OCR provenance missing 'screenshot_size'"))?;
+    let sidecar_modified = provenance
+        .get("screenshot_modified")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("OCR provenance missing 'screenshot_modified'"))?;
+
+    if sidecar_path != screenshot {
+        anyhow::bail!(
+            "OCR provenance screenshot_path mismatch: sidecar says {:?}, --screenshot is {:?}",
+            sidecar_path,
+            screenshot
+        );
+    }
+
+    let actual_metadata = fs::metadata(screenshot)
+        .with_context(|| format!("failed to read screenshot metadata: {}", screenshot))?;
+    let actual_size = actual_metadata.len();
+
+    if sidecar_size != actual_size {
+        anyhow::bail!(
+            "OCR provenance size mismatch: sidecar says {}, actual is {}",
+            sidecar_size,
+            actual_size
+        );
+    }
+
+    let actual_modified = actual_metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .and_then(|d| chrono::DateTime::from_timestamp(d.as_secs() as i64, 0))
+        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+        .unwrap_or_else(|| "unknown".to_string());
+
+    if sidecar_modified != actual_modified {
+        anyhow::bail!(
+            "OCR provenance modified timestamp mismatch: sidecar says {:?}, actual is {:?}",
+            sidecar_modified,
+            actual_modified
+        );
+    }
+
+    match analysis_source.as_str() {
+        "ocr" => {
+            let succeeded = ocr_sidecar
+                .get("succeeded")
+                .and_then(|v| v.as_bool())
+                .ok_or_else(|| anyhow::anyhow!("OCR file missing 'succeeded' field"))?;
+            if !succeeded {
+                anyhow::bail!("--analysis-source ocr requires OCR sidecar with succeeded=true");
+            }
+            let has_ocr_source = response_value
+                .get("ocr_source")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if !has_ocr_source {
+                anyhow::bail!(
+                    "--analysis-source ocr requires vision_response to have ocr_source: true"
+                );
+            }
+        }
+        "vision_fallback" => {
+            let has_ocr_source = response_value
+                .get("ocr_source")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if has_ocr_source {
+                anyhow::bail!(
+                    "--analysis-source vision_fallback requires vision_response to NOT have ocr_source"
+                );
+            }
+        }
+        _ => unreachable!(),
+    }
+
+    let ocr_provenance = serde_json::json!({
+        "screenshot_size": actual_size,
+        "screenshot_modified": actual_modified,
+    });
+
     let log_entry = serde_json::json!({
         "step": step,
         "screenshot": screenshot,
@@ -494,6 +618,8 @@ fn run_log_step(cli: &Cli) -> Result<()> {
         "assessment": assessment,
         "decision": decision,
         "plan": plan,
+        "analysis_source": analysis_source,
+        "ocr_provenance": ocr_provenance,
     });
 
     let run_dir = PathBuf::from("screenshots").join(run_id);
@@ -508,7 +634,11 @@ fn run_log_step(cli: &Cli) -> Result<()> {
     serde_json::to_writer(&mut file, &log_entry)?;
     file.write_all(b"\n")?;
 
-    eprintln!("log-step: step {} logged to {}", step, log_path.display());
+    eprintln!(
+        "log-step: step {step} [{source}] logged to {}",
+        log_path.display(),
+        source = analysis_source,
+    );
     Ok(())
 }
 
@@ -733,24 +863,64 @@ fn run_ocr(path: &str) -> Result<()> {
     let observer = ScreenCaptureObserver::new("");
 
     let start = std::time::Instant::now();
-    let (result, _selected) = observer
-        .ocr_analyze_from_path(path)
-        .ok_or_else(|| anyhow::anyhow!("OCR analysis failed for: {}", path))?;
+    let ocr_result = observer.ocr_analyze_from_path(path);
     let elapsed_ms = start.elapsed().as_millis();
 
-    let selected_text = _selected
-        .and_then(|idx| result.lines.get(idx))
-        .map(|line| line.text.as_str());
+    match ocr_result {
+        Some((result, _selected)) => {
+            let selected_text = _selected
+                .and_then(|idx| result.lines.get(idx))
+                .map(|line| line.text.as_str());
 
-    let output = serde_json::json!({
-        "lines": result.lines,
-        "all_text": result.all_text,
-        "selected_index": result.selected_index,
-        "selected_text": selected_text,
+            let output = serde_json::json!({
+                "lines": result.lines,
+                "all_text": result.all_text,
+                "selected_index": result.selected_index,
+                "selected_text": selected_text,
+            });
+
+            eprintln!("ocr: {} text lines in {}ms", result.lines.len(), elapsed_ms);
+            println!("{}", serde_json::to_string_pretty(&output)?);
+
+            write_ocr_sidecar(path, true, None)?;
+            Ok(())
+        }
+        None => {
+            write_ocr_sidecar(path, false, Some("OCR engine failed to process image"))?;
+            anyhow::bail!("OCR analysis failed for: {}", path);
+        }
+    }
+}
+
+fn write_ocr_sidecar(
+    screenshot_path: &str,
+    succeeded: bool,
+    failure_reason: Option<&str>,
+) -> Result<()> {
+    let metadata = fs::metadata(screenshot_path)
+        .with_context(|| format!("failed to read screenshot metadata: {}", screenshot_path))?;
+    let screenshot_size = metadata.len();
+    let screenshot_modified = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .and_then(|d| chrono::DateTime::from_timestamp(d.as_secs() as i64, 0))
+        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let sidecar = serde_json::json!({
+        "provenance": {
+            "screenshot_path": screenshot_path,
+            "screenshot_size": screenshot_size,
+            "screenshot_modified": screenshot_modified,
+        },
+        "succeeded": succeeded,
+        "failure_reason": failure_reason,
     });
 
-    eprintln!("ocr: {} text lines in {}ms", result.lines.len(), elapsed_ms);
-    println!("{}", serde_json::to_string_pretty(&output)?);
+    let sidecar_path = format!("{}.ocr.json", screenshot_path);
+    fs::write(&sidecar_path, serde_json::to_string_pretty(&sidecar)?)
+        .with_context(|| format!("failed to write OCR sidecar: {}", sidecar_path))?;
 
     Ok(())
 }
