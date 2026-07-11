@@ -274,6 +274,28 @@ fn run_log_step(cli: &Cli) -> Result<()> {
     let prompt_text = fs::read_to_string(prompt_file)
         .with_context(|| format!("failed to read prompt file: {prompt_file}"))?;
 
+    let banned_prompt_patterns: &[&str] = &[
+        "Look at this screenshot file",
+        "You are navigating the menu system",
+        "I am executing a task in",
+        "EXPECTS this screenshot to show",
+        "MATCH question",
+        "actual_screen_title",
+        r#"{"match":"#,
+        r#""match": true|false"#,
+    ];
+    for pattern in banned_prompt_patterns {
+        if prompt_text.contains(pattern) {
+            anyhow::bail!(
+                "vision prompt contains banned pattern: {:?}\n\
+                 The vision prompt must be the pure unified prompt from the skill — \
+                 no task context, no expected screen, no match question. \
+                 See SKILL.md §6 for the canonical template.",
+                pattern
+            );
+        }
+    }
+
     let response_text = fs::read_to_string(response_file)
         .with_context(|| format!("failed to read response file: {response_file}"))?;
 

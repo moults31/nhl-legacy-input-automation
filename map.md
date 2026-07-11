@@ -94,32 +94,11 @@ MAIN MENU
 │   └── NHL 94 ANNIVERSARY MODE          (avoided)
 ```
 
-### Main menu variant (legacy/simplified)
-
-An older-style main menu appears depending on game version or context:
-
-```
-LEGACY MAIN MENU
-├── PLAY NOW
-├── GAME MODES                     [A]  → Grid: PLAY NOW, SEASON, BE A GM, BE A PRO, TOURNAMENT, NHL 94, PRACTICE, MY NHL
-│   └── Each mode → Title Screen → Main Menu (modern version after Start + Autosave)
-├── NHL 94 ANNIVERSARY
-├── MY NHL 15
-├── CUSTOMIZE
-├── SETTINGS
-└── REPLAY
-```
-
-**Transition between variants:** Entering a game mode from the legacy menu
-leads through a title screen, which after Start + Autosave dismissal opens
-the modern Main Menu. Agents should not be confused by the two main menu
-styles — they share the same submenu structure.
-
 ## Navigation Reference
 
 ### How to reach a destination
 
-| Destination | Path from Main Menu (modern) |
+| Destination | Path from Main Menu |
 |---|---|
 | Team Selection (Play Now) | `A` (PLAY), `A` (PLAY NOW) |
 | Quick Modes | `A` (PLAY), `↓ ↓` (QUICK MODES), `A` |
@@ -146,7 +125,7 @@ styles — they share the same submenu structure.
 
 ### Default focus
 
-On the modern Main Menu, the cursor defaults to **COMMUNITY** on first
+On the Main Menu, the cursor defaults to **COMMUNITY** on first
 entry. Navigate to other items with d-pad up/down.
 
 ## Player Movement (Roster Trades)
@@ -295,18 +274,11 @@ wait(0.8);
 - **First launch Autosave dialog**: Appears after pressing Start on the
   title screen. Must be dismissed with A (Okay) before menus are reachable.
 - **Title screen**: Requires Start to advance, not A. Other screens accept A.
-- **Two main menu versions**: The legacy menu (PLAY NOW, GAME MODES, etc.)
-  and the modern menu (PLAY, COMMUNITY, CUSTOMIZE, etc.). They share the
-  same submenu tree. Navigating into a game mode from the legacy menu then
-  exiting lands on the modern menu — not the legacy one.
 - **Game process tree**: Three processes (python3 proton launcher →
   steam.exe → nhllegacy.exe). Kill all three to fully stop the game. Use
   `scripts/kill-nhl.sh`.
 - **Game window substring**: `"nhllegacy"` matches the Proton window. Title
   contains "rexglue-v..." version string.
-- **Vision-confusable screens**: The two main menu variants look different
-  but lead to the same destinations. The vision model may report them
-  separately. Consult this map for canonical navigation paths.
 
 ## Avoided Modes
 
@@ -326,7 +298,6 @@ wait(0.8);
 - Winter Classic — venue selection only; gameplay not explored
 - ROSTER MANAGEMENT leaf nodes: TEAM ROSTERS, EDIT LINES, JERSEY NUMBERS, SET DEFAULT ROSTERS, DOWNLOAD ROSTERS
 - SAVE/LOAD/DELETE leaf nodes: SAVE, DELETE (only LOAD explored)
-- Legacy Main Menu submenus (GAME MODES grid destinations beyond mode selection)
 
 
 ## Operational Gotchas (Added by EXECUTE agent)

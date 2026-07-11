@@ -149,6 +149,8 @@ Pass the unified vision prompt below as the task description. The subagent
 returns a single JSON object. No markdown fences, no explanations.
 
 ```
+Screenshot: screenshots/$RUN_ID/<NNN>_step_<N>.png
+
 Describe this screenshot from an NHL Legacy hockey game menu system.
 
 Be exhaustive and precise. Report only what you observe — do not guess what
@@ -182,6 +184,47 @@ Respond ONLY with a single JSON object. No markdown fences.
       "selected": "highlighted item or empty string"
     }
   ]
+}
+```
+
+**CRITICAL — Prompt format discipline:**
+- The `Screenshot:` line at the top is the ONLY variable substitution.
+  Substitute `<NNN>_step_<N>` with the actual step filename. Never add
+  or change any other text in the prompt.
+- This prompt is the EXACT text you pass as the `prompt` parameter to
+  the `Task` tool with `subagent_type="menu-vision"`. Copy it verbatim.
+- `--log-step` will REJECT any prompt containing banned patterns:
+  goal context ("I am executing a task", "EXPECTS"), wrong template
+  openers ("Look at this screenshot file", "You are navigating"),
+  or match questions ("MATCH question", "{\"match\":").
+- If `--log-step` rejects the log due to prompt validation, you MUST
+  fix the prompt and re-log before sending any further inputs.
+```
+
+**Region examples for common layouts:**
+
+```
+// list layout (default for simple menus) — regions can be omitted:
+{"layout": "list", "regions": null, ...}
+
+// two_column layout (e.g. Player Movement trade screen) — REQUIRED, exactly 2 regions:
+{
+  "layout": "two_column",
+  "regions": [
+    {"name": "Left Panel", "options": ["ANA", "ARI", "BOS", ...], "selected": "ANA"},
+    {"name": "Right Panel", "options": ["Free Agents", ...], "selected": "Free Agents"}
+  ],
+  ...
+}
+
+// tabs layout (e.g. Settings submenu) — REQUIRED, one region per tab:
+{
+  "layout": "tabs",
+  "regions": [
+    {"name": "Rules Tab", "options": ["Offsides", "Icing", ...], "selected": "Offsides"},
+    {"name": "Gameplay Tab", "options": ["Game Speed", ...], "selected": "Game Speed"}
+  ],
+  ...
 }
 ```
 
@@ -260,19 +303,57 @@ NEVER:
 - Send a second script before the previous screenshot has been analyzed
   by `menu-vision` AND logged via `nhl-input --log-step`
 - Chain two scripts back-to-back without vision+log between them
+- Use multiple individual `tap("dpad_*")` calls when a known scroll count
+  applies — the run log's `plan` field and the `--send` script must agree.
+  If the plan says "↓×3", the script must use `scroll("dpad_down", 3, 300)`.
+  Individual taps for repeat presses are a discipline violation.
 
 #### Logging procedure
 
 The prompt sent to `menu-vision` is the exact unified vision prompt from §6
-with `<PATH>` substituted. **No task context, no expected screen, no goal.**
+with `<NNN>_step_<N>` substituted for the screenshot filename. **No task
+context, no expected screen, no goal.**
 
 **Step 1 — write the exact vision prompt to a file:**
 
 ```bash
 cat > /tmp/nhl_prompt.txt << 'PROMPT_EOF'
+Screenshot: screenshots/$RUN_ID/001_step_001.png
+
 Describe this screenshot from an NHL Legacy hockey game menu system.
-...
-{...}
+
+Be exhaustive and precise. Report only what you observe — do not guess what
+"should" be there. If any text is partially obscured, note it.
+
+1. List ALL visible text strings — titles, menu items, breadcrumb trails,
+   button hints, labels, body text. Leave nothing out.
+2. Describe the visual layout in words — positions, panels, visual hierarchy.
+3. Name the screen (the main title or heading visible). Note any breadcrumb
+   trail (e.g. "CUSTOMIZE > CREATION ZONE") if visible.
+4. List all selectable options and which one is highlighted.
+5. Note any button hints (A, B, X, Y, LB, RB, LT, RT) on screen.
+
+Respond ONLY with a single JSON object. No markdown fences.
+
+{
+  "all_text": ["every", "distinct", "text", "string", "on", "screen"],
+  "screen_title": "Main title or heading text",
+  "breadcrumbs": "Path trail if visible, e.g. CUSTOMIZE > CREATION ZONE, or empty string",
+  "layout": "list|two_column|tabs|grid|custom",
+  "layout_description": "Free-text description of visual arrangement",
+  "options": ["selectable", "menu", "items"],
+  "selected": "highlighted option, or empty string if none",
+  "button_hints": ["A Select", "B Back"],
+  "gameplay": false,
+  "confidence": "high|medium|low",
+  "regions": [
+    {
+      "name": "descriptive region label",
+      "options": ["items", "in", "this", "region"],
+      "selected": "highlighted item or empty string"
+    }
+  ]
+}
 PROMPT_EOF
 ```
 
