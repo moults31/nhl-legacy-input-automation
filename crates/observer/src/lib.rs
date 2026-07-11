@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub trait Observer: Send + Sync {
@@ -53,7 +54,7 @@ pub struct ScreenCaptureObserver {
     window_substring: String,
     run_id: Mutex<Option<String>>,
     run_dir: Mutex<Option<PathBuf>>,
-    counter: Mutex<u32>,
+    counter: AtomicU32,
     watch_path: Mutex<Option<PathBuf>>,
     json_log: Mutex<Option<Arc<Mutex<BufWriter<fs::File>>>>>,
 }
@@ -64,7 +65,7 @@ impl ScreenCaptureObserver {
             window_substring: window_substring.to_string(),
             run_id: Mutex::new(None),
             run_dir: Mutex::new(None),
-            counter: Mutex::new(0),
+            counter: AtomicU32::new(0),
             watch_path: Mutex::new(None),
             json_log: Mutex::new(None),
         }
@@ -153,12 +154,17 @@ impl ScreenCaptureObserver {
         })?;
         let img = window.capture_image()?;
 
-        let mut counter = self.counter.lock().unwrap();
-        *counter += 1;
+        let run_dir = if !flat {
+            Some(self.ensure_run_dir()?)
+        } else {
+            None
+        };
+
+        let c = self.counter.fetch_add(1, Ordering::SeqCst) + 1;
 
         let path = if flat {
             let name = if label.is_empty() {
-                format!("{:03}.png", counter)
+                format!("{:03}.png", c)
             } else {
                 format!("{}.png", label)
             };
@@ -166,17 +172,16 @@ impl ScreenCaptureObserver {
             let _ = fs::create_dir_all("screenshots");
             p
         } else {
-            let run_dir = self.ensure_run_dir()?;
+            let run_dir = run_dir.unwrap();
             let name = if label.is_empty() {
-                format!("{:03}.png", counter)
+                format!("{:03}.png", c)
             } else {
-                format!("{:03}_{}.png", counter, label)
+                format!("{:03}_{}.png", c, label)
             };
             run_dir.join(&name)
         };
 
         img.save(&path)?;
-        drop(counter);
 
         tracing::info!("screenshot saved: {}", path.display());
 
