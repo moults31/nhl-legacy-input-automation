@@ -133,29 +133,30 @@ def _find_task_context(goal: dict[str, Any], steps: list[dict[str, Any]], idx: i
         return None
 
     step = steps[idx]
-    step_path = step.get("screenshot", "")
     vision_response = step.get("vision_response")
     if not vision_response:
-        # Try to find context from adjacent logged steps
         for j in range(idx - 1, -1, -1):
             if steps[j].get("vision_response"):
                 return _find_task_context(goal, steps, j)
         return None
 
-    screen = vision_response.get("screen", "")
-    actual_screen = vision_response.get("actual_screen", "")
+    screen_title = vision_response.get("screen_title", "")
     options = vision_response.get("options", [])
 
     for task in tasks:
+        pre_title = task.get("pre_screen_title", "")
+        post_title = task.get("post_screen_title", "")
         pre_screen = task.get("pre_screen", "")
         post_screen = task.get("post_screen", "")
         pre_options = task.get("pre_options", [])
 
-        if pre_screen and pre_screen.lower() in screen.lower():
+        if pre_title and pre_title.lower() in screen_title.lower():
             return {"id": task["id"], "status": task.get("status"), "phase": "pre"}
-        if actual_screen and pre_screen.lower() in actual_screen.lower():
+        if pre_screen and pre_screen.lower() in screen_title.lower():
             return {"id": task["id"], "status": task.get("status"), "phase": "pre"}
-        if post_screen and post_screen.lower() in screen.lower():
+        if post_title and post_title.lower() in screen_title.lower():
+            return {"id": task["id"], "status": task.get("status"), "phase": "post"}
+        if post_screen and post_screen.lower() in screen_title.lower():
             return {"id": task["id"], "status": task.get("status"), "phase": "post"}
 
     return None
@@ -181,7 +182,7 @@ def compute_hotspots(steps: list[dict[str, Any]], goal: dict[str, Any] | None) -
     if not logged:
         return summary
 
-    summary["mismatches"] = sum(1 for s in logged if s.get("assessment") == "mismatch")
+    summary["mismatches"] = sum(1 for s in logged if s.get("assessment") in ("mismatch", "goal_mismatch"))
     summary["recoveries"] = sum(1 for s in logged if s.get("decision") == "recover")
     summary["low_confidence"] = sum(
         1 for s in logged
@@ -193,9 +194,11 @@ def compute_hotspots(steps: list[dict[str, Any]], goal: dict[str, Any] | None) -
     for step in steps:
         if not step.get("logged"):
             summary["timeline"].append("unlogged")
-        elif step.get("assessment") == "match_confirmed":
+        elif step.get("assessment") in ("goal_match",):
             summary["timeline"].append("match")
-        elif step.get("assessment") == "mismatch":
+        elif step.get("assessment") in ("mismatch", "goal_mismatch"):
+            summary["timeline"].append("mismatch")
+        elif step.get("assessment") == "inconsistent":
             summary["timeline"].append("mismatch")
         elif step.get("assessment") == "recovery":
             summary["timeline"].append("recovery")
@@ -247,11 +250,11 @@ def compute_hotspots(steps: list[dict[str, Any]], goal: dict[str, Any] | None) -
         else:
             i += 1
 
-    # Wrong menu entries: mismatch with actual_screen in completely different submenu
+    # Wrong menu entries: mismatch with screen_title in completely different submenu
     for s in logged:
-        if s.get("assessment") == "mismatch":
+        if s.get("assessment") in ("mismatch", "goal_mismatch"):
             vr = s.get("vision_response", {})
-            actual = vr.get("actual_screen", "")
+            actual = vr.get("screen_title", "")
             if actual and actual != "Press Start Screen":
                 summary["wrong_menu_entries"].append({
                     "step": s.get("step_num"),
@@ -275,9 +278,11 @@ def generate_html(steps: list[dict[str, Any]], goal: dict[str, Any] | None, summ
         return json.dumps(obj, indent=2, ensure_ascii=False)
 
     def badge_class(assessment: str | None) -> str:
-        if assessment == "match_confirmed":
+        if assessment in ("goal_match",):
             return "badge-ok"
-        elif assessment == "mismatch":
+        elif assessment in ("goal_mismatch", "mismatch"):
+            return "badge-fail"
+        elif assessment == "inconsistent":
             return "badge-fail"
         elif assessment == "recovery":
             return "badge-recover"
@@ -286,10 +291,12 @@ def generate_html(steps: list[dict[str, Any]], goal: dict[str, Any] | None, summ
         return "badge-neutral"
 
     def badge_label(assessment: str | None) -> str:
-        if assessment == "match_confirmed":
+        if assessment in ("goal_match",):
             return "MATCH"
-        elif assessment == "mismatch":
+        elif assessment in ("goal_mismatch", "mismatch"):
             return "MISMATCH"
+        elif assessment == "inconsistent":
+            return "INCONSISTENT"
         elif assessment == "recovery":
             return "RECOVERY"
         elif assessment == "halt":
@@ -325,7 +332,7 @@ def generate_html(steps: list[dict[str, Any]], goal: dict[str, Any] | None, summ
         duration = step.get("duration_s")
         logged = step.get("logged")
         task_ctx = step.get("_task_context")
-        expanded = assessment in ("mismatch", "recovery", "halt") or not logged
+        expanded = assessment in ("mismatch", "goal_mismatch", "inconsistent", "recovery", "halt") or not logged
 
         # Next step's screenshot and assessment
         next_ss_rel = ""
@@ -341,7 +348,7 @@ def generate_html(steps: list[dict[str, Any]], goal: dict[str, Any] | None, summ
 
         section_class = ""
         border_color = ""
-        if assessment == "mismatch":
+        if assessment in ("mismatch", "goal_mismatch", "inconsistent"):
             section_class = "section-mismatch"
             border_color = "#e74c3c"
         elif assessment == "recovery":

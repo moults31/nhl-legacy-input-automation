@@ -212,6 +212,30 @@ is a **two-column layout** for swapping players between teams.
   team (Anaheim Ducks) and the right panel defaults to Free Agents. Both
   panels can be independently set to any league/team.
 
+## First Launch Hazards
+
+After pressing Start on the title screen, zero or more of these dialogs
+may appear. They can come in **ANY ORDER** and some may not appear at all
+depending on whether a profile exists and whether this is the first boot.
+Treat each dialog as a normal screen transition — dismiss, verify with
+vision, then continue.
+
+| Screen | Recognition | Dismissal |
+|--------|-------------|-----------|
+| Autosave Information | Dialog box: "Autosave Information", single "Okay" button | `A` |
+| Profile Warning Screen | Options: "Sign In", "Retry", "Continue Without Saving" | `↓` to "Continue Without Saving", `A` |
+| Choose Your Favorite Team | Grid of NHL team logos with team names | Select any team with d-pad, `A` |
+| Tutorial prompt | Options: "Yes", "No" — asks "Would you like to enter Tutorial Mode?" | `↓` to "No", `A` |
+
+The full possible chain is:
+```
+Title Screen (Start) → [Autosave?] → [Profile Warning?] → [Choose Favorite Team?] → [Tutorial?] → Main Menu
+```
+
+DO NOT assume a fixed order or that all dialogs appear. After each `A`-press
+to dismiss, take a screenshot and verify with vision before sending the next
+input.
+
 ## Navigation Hazards
 
 ### COMMUNITY flyout
