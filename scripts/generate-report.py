@@ -237,7 +237,7 @@ def compute_hotspots(steps: list[dict[str, Any]], goal: dict[str, Any] | None) -
                 else:
                     break
             span = j - i
-            if span >= 2:
+            if span >= 3:
                 summary["recovery_spirals"].append({
                     "start_idx": i,
                     "end_idx": j - 1,

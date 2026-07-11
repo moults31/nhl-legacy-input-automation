@@ -221,9 +221,59 @@ Respond ONLY with a single JSON object. No markdown fences.
 - `--log-step` will REJECT any prompt containing banned patterns:
   goal context ("I am executing a task", "EXPECTS"), wrong template
   openers ("Look at this screenshot file", "You are navigating"),
-  or match questions ("MATCH question", "{\"match\":").
+  or match questions ("MATCH question", "{\"match\"\:").
 - If `--log-step` rejects the log due to prompt validation, you MUST
   fix the prompt and re-log before sending any further inputs.
+
+#### Prompt variants: exhaustive vs. streamlined
+
+The canonical prompt above (with `all_text`) is the **exhaustive** variant.
+Use it for:
+- EXPLORE mode (you need full screen cataloging)
+- First-launch dialogs (unknown screens need full description)
+- Any step where the screen is unfamiliar and not in `map.md`
+
+For EXECUTE mode routine navigation between known screens (screens that
+appear in `map.md`), use the **streamlined** variant instead — it drops
+the exhaustive `all_text` requirement and focuses on structured fields
+needed for matching and navigation:
+
+```
+Screenshot: <NNN>_step_<N>.png
+
+Describe this NHL Legacy hockey game menu screenshot.
+Report ONLY what you observe.
+
+1. Name the screen (main title/heading). Note breadcrumbs if visible.
+2. List all selectable options and which one is highlighted.
+3. Note any visible button hints (A, B, X, Y, LB, RB, LT, RT).
+4. Describe the visual layout.
+
+Respond ONLY with a single JSON object. No markdown fences.
+
+{
+  "screen_title": "Main title or heading text",
+  "breadcrumbs": "Path trail if visible, e.g. CUSTOMIZE > CREATION ZONE, or empty string",
+  "layout": "list|two_column|tabs|grid|custom",
+  "layout_description": "Free-text description of visual arrangement",
+  "options": ["selectable", "menu", "items"],
+  "selected": "highlighted option, or empty string if none",
+  "button_hints": ["A Select", "B Back"],
+  "gameplay": false,
+  "confidence": "high|medium|low",
+  "regions": [
+    {
+      "name": "descriptive region label",
+      "options": ["items", "in", "this", "region"],
+      "selected": "highlighted item or empty string"
+    }
+  ]
+}
+```
+
+When using the streamlined prompt, relax Pass A check C2: if `all_text` is
+absent or empty, skip C2 (the field was not requested). All other Pass A
+and Pass B checks apply normally.
 ```
 
 **Region examples for common layouts:**
@@ -695,7 +745,7 @@ Then perform two passes:
 | # | Check | If fails |
 |---|-------|----------|
 | C1 | `selected` (if non-empty) appears in `options` | Assessment → `inconsistent`. Trigger INTERRUPT. |
-| C2 | Every string in `options` and `screen_title` appears in `all_text` (fuzzy, case-insensitive substring match). At minimum: `options` items and `screen_title` must each be contained somewhere in `all_text`. | Assessment → `inconsistent`. |
+| C2 | Every string in `options` and `screen_title` appears in `all_text` (fuzzy, case-insensitive substring match). At minimum: `options` items and `screen_title` must each be contained somewhere in `all_text`. | Assessment → `inconsistent`. <br>**Skip C2** if `all_text` is empty or absent (streamlined prompt — `all_text` was not requested). |
 | C3 | If `breadcrumbs` is non-empty, the last segment of the breadcrumb trail should contain `screen_title` (case-insensitive). | Downgrade confidence one level. |
 | C4 | `layout_description` must be semantically consistent with `layout`. For example: if `layout` is `"list"` but `layout_description` says "two side-by-side panels", that's a contradiction. | Downgrade confidence one level. |
 | C5 | If `layout` is `"list"` and `regions` is present, regions are harmless. If `layout` is `"two_column"`, `"tabs"`, or `"grid"`, `regions` MUST be present with options that collectively account for what's in `options`. | Downgrade confidence one level. |
@@ -720,9 +770,44 @@ Compare the vision response against the task's `pre_screen_title`,
 
 - **If all three pass**: Assessment → `goal_match`. Proceed to §3b
   (NAVIGATION inner loop).
-- **If any fails**: Assessment → `goal_mismatch`. Navigate to the expected
-  screen using the exact button path from `map.md` Navigation Reference.
-  Do not proceed until both Pass A and Pass B pass.
+- **If any fails**: Assessment → `goal_mismatch`. Before entering RECOVERY,
+  run the **hallucination guard** (§3a.1) to rule out vision model fabrication.
+  If the guard clears suspicion, navigate to the expected screen using the
+  exact button path from `map.md` Navigation Reference. Do not proceed until
+  both Pass A and Pass B pass.
+
+#### 3a.1. Hallucination guard (before recovery from a mismatch)
+
+Vision models can fabricate screen titles and options with high confidence.
+Before entering the RECOVERY protocol for a Pass B failure, check for
+hallucination:
+
+1. **Sanity check**: Do `vision.screen_title` and at least half of
+   `vision.options` match any screen documented in `map.md`?
+   - Quick scan: if the screen title mentions menus that don't exist in the
+     map (e.g. "GAME MODES", "GAME STOP", "ONLINE SOCIETY"), or options
+     contain made-up items not in any map.md node, the response is suspect.
+   - If the screen IS known but doesn't match `goal.json` expectations, the
+     agent is simply off course → proceed to RECOVERY normally.
+
+2. **If the screen is unrecognizable** (title and options don't match any
+   `map.md` node AND the title seems fabricated):
+   - **Do NOT send any input.** Re-take a screenshot with the same label:
+     ```bash
+     ./target/debug/nhl-input --send 'screenshot("step_N");'
+     ```
+   - Run the vision prompt again via `menu-vision` on the new screenshot.
+   - If the second vision call returns the **same** unrecognizable screen
+     (matching title + similar options), the screen is real. Log both calls
+     and enter RECOVERY.
+   - If the second vision call returns a **different** screen (one that is
+     recognizable or matches goal.json), the first call was a hallucination.
+     Log the original call as `inconsistent` and continue with the corrected
+     vision result. Discard the hallucinated response.
+
+3. **After any re-take**: log the result via `nhl-input --log-step`. The
+   `decision` field should be `recover` if the re-take confirms mismatch, or
+   `navigate` if the re-take resolves the hallucination and returns to goal.
 
 #### 3b. NAVIGATION inner loop
 
@@ -746,10 +831,13 @@ For navigation within the task, follow this tight loop:
    `post_screen`, and `post_options`. Re-open `map.md` Navigation Reference.
    You are anchoring to known coordinates — do not guess from memory.
 
-2. **CHECK**: Run the unified vision prompt via `menu-vision` with NO task
-   context (the same prompt for every vision call). You MUST receive a valid
-   JSON object. If the subagent call fails, returns empty, or returns
-   non-JSON: **HALT.** Do not send any inputs. Retry the vision call.
+2. **CHECK**: Run the vision prompt via `menu-vision` with NO task
+    context (the same prompt for every vision call). Use the **streamlined**
+    prompt variant from §6 for routine navigation between known screens,
+    and the **exhaustive** variant for first-launch dialogs, EXPLORE mode,
+    or any unfamiliar screen. You MUST receive a valid JSON object. If the
+    subagent call fails, returns empty, or returns non-JSON: **HALT.** Do
+    not send any inputs. Retry the vision call.
 
    Run **Pass A** consistency checks (C1–C7 from §3a) on the vision response.
    If Pass A fails: treat as INTERRUPT (step 6). Do NOT attempt goal-matching
@@ -793,9 +881,10 @@ For navigation within the task, follow this tight loop:
    between releases. Valid directions: `"dpad_up"` / `"up"`, `"dpad_down"` /
    `"down"`, `"dpad_left"` / `"left"`, `"dpad_right"` / `"right"`.
 
-5. **VERIFY**: Run the unified vision prompt via `menu-vision` on the new
-   screenshot. Same halt rule as CHECK — you MUST receive a parseable JSON
-   response before sending any further inputs.
+5. **VERIFY**: Run the vision prompt via `menu-vision` on the new
+    screenshot. Same halt rule as CHECK — you MUST receive a parseable JSON
+    response before sending any further inputs. Use the streamlined prompt
+    for routine navigation, exhaustive for unfamiliar screens.
 
    Run **Pass A** consistency checks. If they pass, compare against the
    expected intermediate screen from your plan. If the screen doesn't match
@@ -817,8 +906,8 @@ For navigation within the task, follow this tight loop:
 
 #### 3c. POST-CHECK (MANDATORY)
 
-Take a screenshot, run the unified vision prompt via `menu-vision`. Log the
-result.
+Take a screenshot, run the vision prompt via `menu-vision` (streamlined for
+routine, exhaustive for unfamiliar). Log the result.
 
 Run **Pass A** consistency checks (C1–C7 from §3a). If Pass A fails: enter
 RECOVERY protocol (§3d). Do NOT skip tiers.
@@ -848,8 +937,9 @@ Update `goal.json` on disk after every status change.
 **YOU ARE NOT ALLOWED TO ABORT A TASK without exhausting all four tiers.**
 Each tier must be attempted with screenshot verification before escalating.
 
-**Tier 1 — One-step back**: Press `B`, wait 1.5s, screenshot. Run the unified
-vision prompt via `menu-vision`. Run Pass A checks. Is this a screen you
+**Tier 1 — One-step back**: Press `B`, wait 1.5s, screenshot. Run the vision
+prompt via `menu-vision` (use **exhaustive** — you are lost, don't assume
+you know the screen). Run Pass A checks. Is this a screen you
 recognize from `map.md`? If yes, re-plan from here. If not, go to Tier 2.
 
 **Tier 2 — Return to anchor**: Press `B` repeatedly (up to 10 times, with

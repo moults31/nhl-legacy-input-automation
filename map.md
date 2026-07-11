@@ -34,7 +34,19 @@ MAIN MENU
 │   │   └── Online Shootout
 │   ├── CAREER                      [A]
 │   │   ├── LIVE THE LIFE                (avoided: complex)
-│   │   ├── BE A GM MODE
+│   │   ├── BE A GM MODE            [A]  → Entry (NEW / LOAD)
+│   │   │   ├── NEW                 [A]  → Setup → Team Select → Save → Hub
+│   │   │   │   ├── QUICK SETTINGS       (Tab 1/3)
+│   │   │   │   ├── RULES                (Tab 2/3)
+│   │   │   │   ├── ADVANCED SETTINGS    (Tab 3/3)
+│   │   │   │   ├── SELECT TEAM          (LT/RT teams, LB/RB GM skill, Y name)
+│   │   │   │   │   └── Salary Cap dialog → Yes / No / Cancel
+│   │   │   │   └── SAVE NAME            (default "BE A GM1_")
+│   │   │   │       └── BE A GM HUB
+│   │   │   │           A = Advance sim, Y = Phone menu, Start = Game Menu
+│   │   │   │           LB/RB = team, LT/RT = month, RS = Messages
+│   │   │   │           Phone: GM Tracker, Trades, Free Agents, Rosters, etc.
+│   │   │   └── LOAD                     → Load existing save
 │   │   └── SEASON MODE
 │   └── TOURNAMENTS                 [A]
 │       ├── PLAYOFF MODE
@@ -113,6 +125,8 @@ MAIN MENU
 | Save/Load/Delete | Customize → `↓` ×7 (SAVE/LOAD/DELETE), `A` |
 | Load Roster | Save/Load → `↓` (LOAD), `A` → `↓` (ROSTERS), `A` → select file, `A` → confirm Proceed |
 | Settings | Customize → `↓` ×8 (SETTINGS), `A` |
+| BE A GM MODE | PLAY → `↓` ×4 (CAREER), `A` → `↓` (BE A GM MODE), `A` → `A` (NEW) |
+| Be A GM Hub (any phone option) | See be-a-gm-hub section below |
 
 ### On-screen button hints
 
@@ -190,6 +204,96 @@ is a **two-column layout** for swapping players between teams.
 - When entering Player Movement, the left panel defaults to the first NHL
   team (Anaheim Ducks) and the right panel defaults to Free Agents. Both
   panels can be independently set to any league/team.
+
+## BE A GM MODE
+
+### Entry Flow
+
+```
+BE A GM MODE (NEW / LOAD)  → A (NEW)
+  → Quick Settings (Tab 1, LT/RT for tabs)
+  → Rules (Tab 2)
+  → Advanced Settings (Tab 3)
+  → A (Advance) through all tabs with defaults
+  → SELECT TEAM screen
+    → LT/RT: cycle teams, LB/RB: GM skill level
+    → A (Advance)
+    → [Salary Cap dialog if over cap. Cancel is highlighted by default.
+     ↑×2 → "Yes – CPU will automatically fix teams", A to confirm.
+     WARNING: pressing A on Cancel returns to team selection — do not skip this dialog.]
+  → Save Name keyboard (default "BE A GM1_")
+    → From the "a" key: ↓×2 → Space, →×1 → Done, A to confirm
+  → Loading → BE A GM HUB
+
+#### Team Selection details
+
+On the SELECT TEAM screen each team shows:
+- **OFF/DEF/GOA star ratings** (0.5–5★)
+- **AHL Affiliate** (e.g., Chicago Wolves) with OVR rating
+- **Players Under Contract** count, **Average Age**, **Top Player** name
+- **Salary Cap Available** (+/–$), **Cap Value**
+- **Staff bars**: Amateur Scout, Pro Scout, Medical Staff, Asst. Coach
+- **TP for Legend**: total training points to reach Legend rank (4,800 at default)
+
+Button hints: `A Advance`, `B Help`, `X Substitute Team`, `Y Edit GM First Name`, `LT/RT Cycle teams`, `LB/RB GM Skill Level`.
+```
+
+### Setup Tabs Detail
+
+**Quick Settings (Tab 1):**
+Skill Level (Pro), Game Style (Simulation), Period Length (5 Min),
+Be A GM Length (25), Season Starting Date (Regular Season), CPU Trades (On)
+
+**Rules (Tab 2):**
+Period Length, Offsides (Delayed), Icing (Hybrid), Penalties (On),
+Post Whistle Rules (Relaxed), Penalty Time Scaling
+
+**Advanced Settings (Tab 3):**
+Tuner Set Version (Latest), Playoff Series Length (Best of 7),
+Playoff Tie Break (Continuous OT), Season Overtime Loss (1 Pt),
+Season Tie Break (5min 4v4 → Shootout), Asst Coach Edits Lines (Yes)
+
+### Hub Layout
+
+Weekly calendar (Sun–Sat) with Home/Away indicators, Team Leaders panel,
+Injuries panel, Message Center.
+
+| Button | Action |
+|--------|--------|
+| **A** | Advance (sim time / open GM Tracker) |
+| **Y** | Expand → Phone "Go To..." menu |
+| **Start** | Game Menu (Continue / Main Menu / Save Game) |
+| **X** | Use Phone (same as Y?) |
+| **B** | Help |
+| **LB/RB** | Switch team |
+| **LT/RT** | Switch month |
+| **RS** | Message Center |
+
+**Phone menu back behavior:** Pressing `B` from a phone sub-screen (e.g., Free Agents, Team Rosters) closes **both** the sub-screen AND the phone menu, returning to the bare hub. Press `Y` again to reopen the phone menu.
+
+**Attract mode:** The hub enters an attract/demo state after ~30s idle — gameplay animates behind the UI. This is normal. Do NOT treat it as a navigation error; any d-pad input returns focus to menus.
+
+### Phone "Go To..." Menu
+
+| # | Option | Description seen on hover |
+|---|--------|--------------------------|
+| 1 | **GM Tracker** | "View info on how you are doing as GM." |
+| 2 | **Trade Players** | Two-column trade: 6 slots/side, LT/RT teams, salary cap. Shows retained cap, cap total per side, league approval status, and GM relationship. |
+| 3 | **Trading Block** | List of trade-offer players |
+| 4 | **Free Agents** | Player table + salary cap summary + offer contracts. LT/RT filter by All Skaters tab; LB/RB toggle between All and Skaters. Sort by OVR, POS, ROLE, AGE, Salary. |
+| 5 | **Scout Assignment** | Scout management |
+| 6 | **Contracts** | Contract review |
+| 7 | **Team Rosters** | Roster editing |
+| 8 | **Transaction News** | League trade log |
+| 9 | **Staff Upgrades** | Hire/upgrade staff |
+
+GM Tracker shows: GM Reputation (Level 1), TP (11/11), Roster Grades,
+Easiest Tasks (objectives with TP rewards — e.g., "Win a game by at least
+3 Goals" for 2 TP, "Play one Game" for 3 TP, "Sign one Free Agent" for 3 TP),
+Amateur GM Award (Progress 100%). Tabs: Franchise Makeup, Franchise Analysis.
+
+First-launch hazards (Autosave, Profile, Favorite Team, Tutorial) may appear
+between Title Screen and Main Menu. See First Launch Hazards section.
 
 ## First Launch Hazards
 
@@ -271,14 +375,18 @@ wait(0.8);
 
 ## Operational Gotchas
 
-- **First launch Autosave dialog**: Appears after pressing Start on the
-  title screen. Must be dismissed with A (Okay) before menus are reachable.
 - **Title screen**: Requires Start to advance, not A. Other screens accept A.
 - **Game process tree**: Three processes (python3 proton launcher →
   steam.exe → nhllegacy.exe). Kill all three to fully stop the game. Use
   `scripts/kill-nhl.sh`.
 - **Game window substring**: `"nhllegacy"` matches the Proton window. Title
   contains "rexglue-v..." version string.
+- **Triggers (LT/RT)**: Analog axes. `tap("rt")` / `tap("lt")` silently do
+  nothing. Use `tap_trigger("rt", 500)` or `set_axis("right_trigger", 1.0)`.
+  See Player Movement Operational Notes for detailed trigger usage.
+- **Run ID validation bug**: `validate_run_id_neutral` enforces `len() == 19`,
+  so only `_run` suffix (19 chars) is accepted. `_explore` (23 chars) is
+  rejected. Tracked in `crates/app/src/main.rs:662`.
 
 ## Avoided Modes
 
@@ -298,14 +406,7 @@ wait(0.8);
 - Winter Classic — venue selection only; gameplay not explored
 - ROSTER MANAGEMENT leaf nodes: TEAM ROSTERS, EDIT LINES, JERSEY NUMBERS, SET DEFAULT ROSTERS, DOWNLOAD ROSTERS
 - SAVE/LOAD/DELETE leaf nodes: SAVE, DELETE (only LOAD explored)
-
-
-## Operational Gotchas (Added by EXECUTE agent)
-
-- **Daemon input**: When chaining `tap()` and `wait()` commands in a single
-  `--send` call, the daemon sometimes silently drops inputs. Send inputs
-  one-by-one with screenshots between each step. For repeat d-pad presses,
-  use `scroll("dpad_down", 6, 300)` — it's atomic within the daemon.
-- **`tap("rt")` and `tap("lt")` do not work:** Triggers are analog axes, not
-  digital buttons. These silently do nothing — use `tap_trigger("rt", 500)`
-  or the explicit `set_axis` pattern instead.
+- BE A GM sub-screens explored: GM Tracker, Trade Players, Free Agents.
+  Still unexplored: Trading Block, Scout Assignment, Contracts, Team Rosters,
+  Transaction News, Staff Upgrades.
+- BE A GM: Sim gameplay (Advance on hub) — not tested beyond GM Tracker opening
