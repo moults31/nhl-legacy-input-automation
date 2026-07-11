@@ -1,7 +1,7 @@
 ---
 description: Interprets NHL Legacy menu screenshots and returns JSON descriptions
 mode: subagent
-model: google/gemini-3.1-flash-lite
+model: opencode-go/mimo-v2.5
 hidden: true
 permission:
   edit: deny
