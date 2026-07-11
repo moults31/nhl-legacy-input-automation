@@ -47,7 +47,14 @@ MAIN MENU
 │   │   │   │           LB/RB = team, LT/RT = month, RS = Messages
 │   │   │   │           Phone: GM Tracker, Trades, Free Agents, Rosters, etc.
 │   │   │   └── LOAD                     → Load existing save
-│   │   └── SEASON MODE
+│   │   └── SEASON MODE                     [A] → Entry (NEW / LOAD)
+│       ├── NEW                        [A] → Setup → Team Select → Save → Hub
+│       │   ├── QUICK SETTINGS               (Tab 1/3, LT/RT for tabs)
+│       │   ├── RULES                        (Tab 2/3)
+│       │   └── ADVANCED SETTINGS            (Tab 3/3)
+│       │   ├── SELECT TEAM                  (← to toggle user control, LT/RT divisions)
+│       │   └── SAVE NAME                    (default "SEASON1_")
+│       └── LOAD                             → Load existing save
 │   └── TOURNAMENTS                 [A]
 │       ├── PLAYOFF MODE
 │       ├── TOURNAMENT MODE
@@ -127,6 +134,118 @@ MAIN MENU
 | Settings | Customize → `↓` ×8 (SETTINGS), `A` |
 | BE A GM MODE | PLAY → `↓` ×4 (CAREER), `A` → `↓` (BE A GM MODE), `A` → `A` (NEW) |
 | Be A GM Hub (any phone option) | See be-a-gm-hub section below |
+| SEASON MODE | PLAY → `↓` ×4 (CAREER), `A` → `↓` ×2 (SEASON MODE), `A` → `A` (NEW) |
+| Season Mode Hub | Season Mode → selection → save → hub (see Season Mode section) |
+| Season Mode Trade | Hub → GM OPTIONS → `↓` (TRADE PLAYERS), `A` |
+
+### Season Mode Central Hub Navigation
+
+The Season Mode hub has **two views**. The menu view shows 8 items in a left panel;
+the calendar view (activated by pressing B from the menu view) fills the screen.
+
+| Input | Menu View | Calendar View |
+|-------|-----------|---------------|
+| **A** | Select menu item | Play/Simulate on game date |
+| **A (non-game date)** | — | Go to Team Standings |
+| **B** | Enter calendar-focused view | Move to previous date |
+| **Start** / **D-pad right** | Game Menu (CUSTOMIZE overlay) | Game Menu (CUSTOMIZE overlay) |
+| **Y** | Expand info panel | Expand info panel |
+| **LT/RT** | Cycle month in calendar strip | Cycle month in calendar |
+| **LB/RB** | (same as LT/RT) | (same as LT/RT) |
+| **RS** | Message Center | Message Center |
+| **D-pad left** | — | Help |
+
+### Season Mode Setup Tabs
+
+**Quick Settings (Tab 1):**
+League Type (NHL™), Skill Level (Pro), Game Style (Simulation),
+Period Length (5 Min), Roster Control (Standard), CPU Trades (On)
+
+**Rules (Tab 2):**
+Period Length, Offsides (Delayed), Icing (Hybrid), Injuries (On),
+Penalties (On), Post Whistle Rules (Relaxed)
+
+**Advanced Settings (Tab 3):**
+Tuner Set Version (Latest), Playoff Series Length (Authentic),
+Playoff Tie Break (Continuous OT), Season Overtime Loss (1 Pt),
+Season Tie Break (5min 4v4 → Shootout), Asst Coach Edits Lines (Yes)
+
+### Season Mode Central Hub Menu
+
+| # | Item | Type | Sub-options |
+|---|------|------|-------------|
+| 1 | PLAY NEXT GAME | Action | Opens calendar at next game date |
+| 2 | CALENDAR | Action | Opens monthly calendar |
+| 3 | GM OPTIONS | Flyout | FREE AGENTS, TRADE PLAYERS, INJURY REPORT, TRANSACTION NEWS, ROSTER MOVES |
+| 4 | COACHING OPTIONS | Flyout | PRACTICE MODE, EDIT LINES, VIEW LINES, JERSEY NUMBERS, STRATEGY, TEAM REPORTS |
+| 5 | STATS CENTRAL | Flyout | TEAM STANDINGS, TEAM STATS (SEASON/PLAYOFF), PLAYER STATS (SEASON/PLAYOFF), PLAYOFF TREE, AWARDS |
+| 6 | EA SPORTS MEDIA HUB | ? | Not explored |
+| 7 | CUSTOMIZE | Flyout | EDIT PLAYER, SETTINGS, SAVE SEASON |
+| 8 | QUIT SEASON MODE | Action | Confirmation: Yes / Save and Exit / No |
+
+### Sim Game Flow
+
+1. Navigate calendar to a game date (opponent logo shown on cell)
+2. Press A → "Simulate up to this day" / Cancel dialog
+3. Select "Simulate up to this day" and press A
+4. Game processes and hub updates: record, scores, team leaders, messages
+
+**HAZARD:** Cancel is the **default selection** on the sim dialog. The
+agent must scroll to "Simulate up to this day" before pressing A, or the
+dialog will be dismissed without simming.
+
+After simming, the calendar shows scores on completed game dates (e.g.,
+"L 3-0"), the team record updates, the Team Leaders panel populates with
+player stats, and the Message Center populates with league news.
+
+### Season Mode Trade Screen
+
+Accessed via GM OPTIONS → TRADE PLAYERS. Two-column 5-slot layout (not 6 like
+Player Movement in CUSTOMIZE). Cycling teams with LT/RT. Player selection list
+shows POS, PLAYER, TRADE VALUE (bar), OVR, AGE, SAL. Filter with LB/RB
+(All Skaters, Forwards, Defense, Goalies). A to select, X to execute (presumed).
+
+**HAZARD:** The trade screen opens with **random teams** by default (not
+the user's team). Agent must LT/RT cycle to the user's team on each side.
+
+**Player list controls:** `A` select, `B` back, `LB/RB` filter (All
+Skaters / Forwards / Defense / Goalies), `LS` sort, `RS` player info.
+
+### Season Mode Team Selection
+
+Unlike BE A GM (highlight = selected), Season Mode requires pressing **←
+(dpad_left)** to toggle a team as user-controlled. The counter shows
+"User Teams X/30". At least 1 user team required to begin.
+
+**HAZARD:** The on-screen button bar only shows `Help`, `X Substitute Team`,
+`A Begin Mode`, and `B Back`. It does NOT show the user-control toggle.
+Look for ◁ ▷ arrows flanking the highlighted team row in the team list
+table — those indicate that **d-pad left/right** toggles user control. If
+you press A (Begin Mode) without a user team assigned, a blocking dialog
+appears ("You must have at least one user controlled team to continue").
+
+### Game Menu (Start in Season Mode)
+
+- EDIT PLAYER
+- SETTINGS (RULES, GAMEPLAY, VOLUME, VISUAL, USER CELEBRATIONS, CONTROLLER, VIDEO CALIBRATION)
+- SAVE SEASON
+
+### SEASON MODE Operational Notes
+
+- **Menu wrapping:** The hub's 8-item menu wraps — scrolling past
+  QUIT SEASON MODE goes to PLAY NEXT GAME and vice versa.
+- **No dedicated Advance button:** Unlike BE A GM (where A advances time
+  from the hub), Season Mode requires explicitly selecting a game date on
+  the calendar and choosing "Simulate up to this day" from the dialog.
+- **B toggles hub view:** Pressing B from the menu view enters the
+  calendar-focused view (no left menu panel). Pressing Start returns the
+  full menu.
+- **Unlabeled input:** A on a non-game date in the calendar goes to Team
+  Standings. D-pad left in the calendar view opens Help.
+- **Message Center:** Populates automatically with league news (trades,
+  game results, signing announcements) presented as social-media posts.
+- **Trade screen default teams:** The trade screen opens with random
+  teams, not the user's team. Cycle with LT/RT on each panel.
 
 ### On-screen button hints
 
@@ -406,6 +525,9 @@ wait(0.8);
 - Winter Classic — venue selection only; gameplay not explored
 - ROSTER MANAGEMENT leaf nodes: TEAM ROSTERS, EDIT LINES, JERSEY NUMBERS, SET DEFAULT ROSTERS, DOWNLOAD ROSTERS
 - SAVE/LOAD/DELETE leaf nodes: SAVE, DELETE (only LOAD explored)
+- SEASON MODE: Sim gameplay (Play/Simulate on calendar) — tested and working
+- SEASON MODE: Trade Players screen layout explored — full trade execution not tested
+- SEASON MODE sub-screens: EDIT PLAYER (Game Menu), EA SPORTS MEDIA HUB — not explored
 - BE A GM sub-screens explored: GM Tracker, Trade Players, Free Agents.
   Still unexplored: Trading Block, Scout Assignment, Contracts, Team Rosters,
   Transaction News, Staff Upgrades.
