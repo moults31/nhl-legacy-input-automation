@@ -112,6 +112,41 @@ pub fn run_script(
         });
     }
 
+    {
+        let ctrl = Arc::clone(&controller);
+        engine.register_fn("tap_trigger", move |trigger: &str, hold_ms: i64| {
+            let ax = parse_axis(trigger)?;
+            let mut c = ctrl.lock().map_err(|e| format!("mutex lock: {e}"))?;
+            c.set_axis(ax, 1.0).map_err(|e| format!("set_axis: {e}"))?;
+            c.flush().map_err(|e| format!("flush: {e}"))?;
+            std::thread::sleep(Duration::from_millis(hold_ms as u64));
+            c.set_axis(ax, 0.0).map_err(|e| format!("set_axis: {e}"))?;
+            c.flush().map_err(|e| format!("flush: {e}"))
+        });
+    }
+
+    {
+        let ctrl = Arc::clone(&controller);
+        engine.register_fn(
+            "scroll",
+            move |direction: &str, count: i64, delay_ms: i64| {
+                let btn = parse_button(direction)?;
+                let mut c = ctrl.lock().map_err(|e| format!("mutex lock: {e}"))?;
+                for i in 0..count {
+                    c.press(btn).map_err(|e| format!("press: {e}"))?;
+                    c.flush().map_err(|e| format!("flush: {e}"))?;
+                    std::thread::sleep(Duration::from_millis(200));
+                    c.release(btn).map_err(|e| format!("release: {e}"))?;
+                    c.flush().map_err(|e| format!("flush: {e}"))?;
+                    if i < count - 1 {
+                        std::thread::sleep(Duration::from_millis(delay_ms as u64));
+                    }
+                }
+                c.flush().map_err(|e| format!("flush: {e}"))
+            },
+        );
+    }
+
     engine.register_fn("wait", |duration: f64| {
         std::thread::sleep(Duration::from_secs_f64(duration));
     });

@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -10,6 +10,7 @@ use clap::Parser;
 use nhl_controller::UinputController;
 use nhl_observer::{Observer, ScreenCaptureObserver};
 use nhl_script::run_script;
+use serde_json::Value;
 use tracing::{error, info};
 
 #[derive(Parser)]
@@ -33,7 +34,11 @@ struct Cli {
     )]
     window_substring: String,
 
-    #[arg(long, help = "Take a single screenshot with this label and exit")]
+    #[arg(
+        long,
+        help = "Take a single screenshot with this label and exit. \
+                When used with --log-step, this is the path to an existing screenshot file."
+    )]
     screenshot: Option<String>,
 
     #[arg(long, help = "List all visible window titles and exit")]
@@ -73,6 +78,61 @@ struct Cli {
         help = "Send inline Rhai code to a running daemon via the socket"
     )]
     send: Option<String>,
+
+    #[arg(
+        long,
+        conflicts_with_all = ["script", "eval", "list_windows", "daemon", "send"],
+        help = "Append a validated log entry to run_log.jsonl and exit"
+    )]
+    log_step: bool,
+
+    #[arg(
+        long,
+        requires = "log_step",
+        help = "Step number in the current execution sequence"
+    )]
+    step: Option<u32>,
+
+    #[arg(
+        long,
+        requires = "log_step",
+        help = "Path to a file containing the full vision prompt sent to the vision model"
+    )]
+    prompt_file: Option<String>,
+
+    #[arg(
+        long,
+        requires = "log_step",
+        help = "Path to a file containing the raw JSON response from the vision model"
+    )]
+    response_file: Option<String>,
+
+    #[arg(
+        long,
+        requires = "log_step",
+        help = "Agent assessment: match_confirmed, mismatch, recovery, or halt"
+    )]
+    assessment: Option<String>,
+
+    #[arg(
+        long,
+        requires = "log_step",
+        help = "Agent decision: navigate, recover, or halt"
+    )]
+    decision: Option<String>,
+
+    #[arg(
+        long,
+        requires = "log_step",
+        help = "One-line summary of what input will be sent next and why"
+    )]
+    plan: Option<String>,
+
+    #[arg(
+        long,
+        help = "With --daemon: write command and screenshot events to daemon_events.jsonl"
+    )]
+    log_json: bool,
 }
 
 fn main() -> Result<()> {
@@ -97,6 +157,10 @@ fn main() -> Result<()> {
 
     if let Some(ref send_script) = cli.send {
         return send_to_daemon(&cli.socket, send_script);
+    }
+
+    if cli.log_step {
+        return run_log_step(&cli);
     }
 
     if cli.daemon {
@@ -153,6 +217,102 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn run_log_step(cli: &Cli) -> Result<()> {
+    let run_id = cli
+        .run_id
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("--run-id is required"))?;
+    let step = cli
+        .step
+        .ok_or_else(|| anyhow::anyhow!("--step is required"))?;
+    let screenshot = cli
+        .screenshot
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("--screenshot (path) is required"))?;
+    let prompt_file = cli
+        .prompt_file
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("--prompt-file is required"))?;
+    let response_file = cli
+        .response_file
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("--response-file is required"))?;
+    let assessment = cli
+        .assessment
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("--assessment is required"))?;
+    let decision = cli
+        .decision
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("--decision is required"))?;
+    let plan = cli
+        .plan
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("--plan is required"))?;
+
+    let valid_assessments = ["match_confirmed", "mismatch", "recovery", "halt"];
+    if !valid_assessments.contains(&assessment.as_str()) {
+        anyhow::bail!("--assessment must be one of: {:?}", valid_assessments);
+    }
+
+    let valid_decisions = ["navigate", "recover", "halt"];
+    if !valid_decisions.contains(&decision.as_str()) {
+        anyhow::bail!("--decision must be one of: {:?}", valid_decisions);
+    }
+
+    let screenshot_path = PathBuf::from(screenshot);
+    if !screenshot_path.exists() {
+        anyhow::bail!("screenshot file does not exist: {}", screenshot);
+    }
+
+    let prompt_text = fs::read_to_string(prompt_file)
+        .with_context(|| format!("failed to read prompt file: {prompt_file}"))?;
+
+    let response_text = fs::read_to_string(response_file)
+        .with_context(|| format!("failed to read response file: {response_file}"))?;
+
+    let response_value: Value =
+        serde_json::from_str(&response_text).with_context(|| "response file is not valid JSON")?;
+
+    for field in &[
+        "match",
+        "screen",
+        "layout",
+        "options",
+        "selected",
+        "confidence",
+    ] {
+        if response_value.get(field).is_none() {
+            anyhow::bail!("vision response missing required field: {}", field);
+        }
+    }
+
+    let log_entry = serde_json::json!({
+        "step": step,
+        "screenshot": screenshot,
+        "vision_prompt": prompt_text,
+        "vision_response": response_value,
+        "assessment": assessment,
+        "decision": decision,
+        "plan": plan,
+    });
+
+    let run_dir = PathBuf::from("screenshots").join(run_id);
+    fs::create_dir_all(&run_dir)?;
+
+    let log_path = run_dir.join("run_log.jsonl");
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
+
+    serde_json::to_writer(&mut file, &log_entry)?;
+    file.write_all(b"\n")?;
+
+    eprintln!("log-step: step {} logged to {}", step, log_path.display());
+    Ok(())
+}
+
 fn run_daemon(cli: &Cli) -> Result<()> {
     if let Ok(stream) = UnixStream::connect(&cli.socket) {
         drop(stream);
@@ -176,6 +336,23 @@ fn run_daemon(cli: &Cli) -> Result<()> {
         }
         screen_observer.set_watch(p);
     }
+
+    let json_log: Option<Arc<Mutex<BufWriter<fs::File>>>> = if cli.log_json {
+        let run_id = cli.run_id.as_deref().unwrap_or("unknown");
+        let dir = PathBuf::from("screenshots").join(run_id);
+        fs::create_dir_all(&dir)?;
+        let log_path = dir.join("daemon_events.jsonl");
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)?;
+        let writer = Arc::new(Mutex::new(BufWriter::new(file)));
+        screen_observer.set_json_log(Arc::clone(&writer));
+        info!("JSON event log: {}", log_path.display());
+        Some(writer)
+    } else {
+        None
+    };
 
     let observer: Arc<dyn nhl_observer::Observer> = screen_observer;
 
@@ -208,6 +385,22 @@ fn run_daemon(cli: &Cli) -> Result<()> {
                 }
 
                 info!(%script, "daemon executing command");
+
+                if let Some(ref log) = json_log {
+                    let ts =
+                        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+                    let event = serde_json::json!({
+                        "ts": ts,
+                        "event": "command",
+                        "script": script,
+                    });
+                    if let Ok(mut writer) = log.lock() {
+                        let _ = serde_json::to_writer(&mut *writer, &event);
+                        let _ = writer.write_all(b"\n");
+                        let _ = writer.flush();
+                    }
+                }
+
                 let result = run_script(script, Arc::clone(&controller), Arc::clone(&observer));
 
                 let response = match result {

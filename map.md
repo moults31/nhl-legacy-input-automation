@@ -160,8 +160,8 @@ is a **two-column layout** for swapping players between teams.
 ┌─────────────────────┬─────────────────────┐
 │  Left Panel (team)  │  Right Panel (team) │
 │  ← d-pad left       │  d-pad right →      │
-│  LB/RB: cycle team  │  LB/RB: cycle team  │
-│  LT/RT: cycle league│  LT/RT: cycle league│
+│  LT/RT: cycle team  │  LT/RT: cycle team  │
+│  LB/RB: cycle league│  LB/RB: cycle league│
 │                     │                     │
 │  [player list]      │  [player list]      │
 │                     │                     │
@@ -191,6 +191,16 @@ is a **two-column layout** for swapping players between teams.
 
 - **d-pad left/right is NOT listed in on-screen hints** but is the only way
   to switch between the two panels. Without it you're stuck on one side.
+- **LT/RT are analog triggers, not buttons.** `tap("rt")` and `tap("lt")` do
+  NOT work — they silently do nothing. Use `tap_trigger("rt", 500)` or the
+  explicit `set_axis` pattern:
+  ```
+  set_axis("right_trigger", 1.0); wait(0.5); set_axis("right_trigger", 0.0); wait(0.4);
+  ```
+- **LB/RB are digital bumpers.** Use `tap("rb")` or `tap("lb")` — these work.
+- When cycling teams with triggers, the game may occasionally jump multiple
+  teams if the axis signal is polled during a transition. A hold time of
+  500ms and a release wait of 400ms per press has been most reliable.
 - The roster file list under `LOAD → ROSTERS` shows saved rosters sorted by
   last-modified date (newest first). The first entry is highlighted by
   default.
@@ -198,6 +208,9 @@ is a **two-column layout** for swapping players between teams.
   be lost"). Navigate to **Proceed** (`↑` then `A`) to confirm.
 - After loading, the game returns to the Roster file list; press `B` to
   back out to the Customize menu.
+- When entering Player Movement, the left panel defaults to the first NHL
+  team (Anaheim Ducks) and the right panel defaults to Free Agents. Both
+  panels can be independently set to any league/team.
 
 ## Navigation Hazards
 
@@ -237,6 +250,11 @@ dialog. To actually go back: `↑` (select Yes), `A`.
 Default `tap()` holds for 200ms (sufficient at 60fps). At low FPS (e.g.,
 10fps cap), use `tap_ms("btn", 300)` or `hold("btn", 0.3)` if inputs are
 dropped.
+
+For multi-press navigation, use `scroll("dpad_down", 6, 300)` instead of
+shell `for` loops. `scroll` runs entirely inside the daemon, avoiding the
+parallel `--send` timeout issue. Each press holds 200ms; `delay_ms` is the
+pause between releases.
 
 **Triggers at low FPS:** Under a 10fps cap, `tap("rt")` or `tap("lt")` can
 be dropped. Use explicit axis setting with a hold duration instead:
@@ -289,4 +307,10 @@ wait(0.8);
 
 ## Operational Gotchas (Added by EXECUTE agent)
 
-- **Daemon input**: When chaining `tap()` and `wait()` commands in a single `--send` call, the daemon sometimes silently drops inputs. Send inputs one-by-one with screenshots between each step.
+- **Daemon input**: When chaining `tap()` and `wait()` commands in a single
+  `--send` call, the daemon sometimes silently drops inputs. Send inputs
+  one-by-one with screenshots between each step. For repeat d-pad presses,
+  use `scroll("dpad_down", 6, 300)` — it's atomic within the daemon.
+- **`tap("rt")` and `tap("lt")` do not work:** Triggers are analog axes, not
+  digital buttons. These silently do nothing — use `tap_trigger("rt", 500)`
+  or the explicit `set_axis` pattern instead.
