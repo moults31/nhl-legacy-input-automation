@@ -109,6 +109,7 @@ nohup ./target/debug/nhl-input --daemon \
   --run-id "$RUN_ID" \
   --window-substring "nhllegacy" \
   --watch screenshots/latest.png \
+  --log-json \
   > screenshots/daemon.log 2>&1 &
 ```
 
@@ -239,14 +240,82 @@ identity is assigned AFTER `menu-vision` returns.
 Never label a screenshot based on intent or what you expect the screen to
 show. You do not know what screen you are on until `menu-vision` confirms it.
 
-After every `menu-vision` call, append one line to
-`screenshots/$RUN_ID/vision_log.jsonl`:
+### 6b. Mandatory per-step logging
 
-```json
-{"step": "014", "screenshot": "screenshots/.../014_step_014.png", "vision_response": {<full JSON from menu-vision>}}
+After every `menu-vision` call, log one line to `screenshots/$RUN_ID/run_log.jsonl`
+using the `nhl-input --log-step` tool. **THIS IS MANDATORY.** You are NOT
+allowed to send a next input without logging the current step.
+
+The tool validates the entry at write time — if it rejects the log, you have
+a structural problem (missing vision fields, invalid JSON response, etc.) and
+must HALT before sending any further inputs.
+
+**Step 1 — write the exact vision prompt to a file:**
+
+```bash
+cat > /tmp/nhl_prompt.txt << 'PROMPT_EOF'
+Look at this screenshot file: screenshots/$RUN_ID/NNN_step_NNN.png
+
+I am executing a task in an NHL hockey video game. My goal.json task
+EXPECTS this screenshot to show: <expected_screen>
+
+Respond ONLY with a single JSON object. No markdown fences, no explanations.
+
+Answer the MATCH question FIRST:
+
+{"match": true|false, ...}
+PROMPT_EOF
 ```
 
-This file is the **only source of truth** for what each screenshot shows.
+Copy the FULL text you sent to the `menu-vision` subagent. The single-quoted
+heredoc (`<< 'PROMPT_EOF'`) means the shell will not expand variables or
+escape special characters — the content is recorded verbatim.
+
+**Step 2 — write the raw vision response to a file:**
+
+```bash
+cat > /tmp/nhl_response.txt << 'RESP_EOF'
+{"match":true,"screen":"CUSTOMIZE","layout":"list","options":["CREATION ZONE",...],"selected":"CREATION ZONE","gameplay":false,"confidence":"high"}
+RESP_EOF
+```
+
+Copy the EXACT JSON returned by `menu-vision`. Do not reformat, reorder,
+or annotate. The tool will parse and validate it.
+
+**Step 3 — log the step:**
+
+```bash
+nhl-input --log-step \
+  --run-id "$RUN_ID" \
+  --step <N> \
+  --screenshot "screenshots/$RUN_ID/<NNN>_step_<N>.png" \
+  --prompt-file /tmp/nhl_prompt.txt \
+  --response-file /tmp/nhl_response.txt \
+  --assessment "<match_confirmed|mismatch|recovery|halt>" \
+  --decision "<navigate|recover|halt>" \
+  --plan "<one-line summary of what input will be sent next and why>"
+```
+
+| Field | Valid values | Meaning |
+|-------|-------------|---------|
+| `--assessment` | `match_confirmed`, `mismatch`, `recovery`, `halt` | Agent's verdict after cross-checking vision response against goal.json |
+| `--decision` | `navigate`, `recover`, `halt` | Whether to continue the plan, enter recovery, or stop |
+| `--plan` | Free text (one line) | What input will be sent next and why |
+
+**If `--log-step` exits non-zero: HALT.** Do not send any inputs. Rectify
+the logging issue (missing fields, bad vision response, etc.) first.
+
+### 6c. Log validation gate
+
+Every 10 steps, run the validator:
+
+```bash
+./scripts/check-log.sh "$RUN_ID"
+```
+
+If it exits non-zero, the agent has been pressing buttons without logging.
+**HALT** — catch up on the missing log entries before sending any further
+inputs.
 
 ---
 
@@ -300,7 +369,17 @@ needed — the daemon keeps the controller alive):
 ./target/debug/nhl-input --send 'tap("a"); wait(2.5); screenshot("step_N");'
 
 # Scroll down one item
-./target/debug/nhl-input --send 'tap("dpad_down"); wait(0.5); screenshot("step_N");'
+./target/debug/nhl-input --send 'scroll("down", 1, 300); screenshot("step_N");'
+# Or for a single press: ./target/debug/nhl-input --send 'tap("dpad_down"); wait(0.5); screenshot("step_N");'
+
+# Scroll down N items at once (within the daemon, no parallelism issues)
+./target/debug/nhl-input --send 'scroll("dpad_down", 6, 300); screenshot("step_030");'
+
+# Cycle team forward on the Player Movement trade screen (triggers are axes)
+./target/debug/nhl-input --send 'tap_trigger("rt", 500); wait(0.4); screenshot("step_N");'
+
+# Cycle league on the Player Movement trade screen (bumpers are buttons, use tap)
+./target/debug/nhl-input --send 'tap("rb"); wait(0.7); screenshot("step_N");'
 
 # Go back to previous screen
 ./target/debug/nhl-input --send 'tap("b"); wait(1.5); screenshot("step_N");'
@@ -524,9 +603,26 @@ For navigation within the task, follow this tight loop:
 
 4. **INPUT**: Send EXACTLY ONE button press plus wait + screenshot:
 
-   ```
+   ```bash
+   # Face buttons and d-pad (use tap):
    ./target/debug/nhl-input --send 'tap("<button>"); wait(<time>); screenshot("step_N");'
+
+   # Triggers (use tap_trigger — tap("rt") / tap("lt") will NOT work):
+   ./target/debug/nhl-input --send 'tap_trigger("rt", 500); wait(0.5); screenshot("step_N");'
+
+   # Multi-tap navigation (use scroll instead of for-loops):
+   ./target/debug/nhl-input --send 'scroll("dpad_down", 6, 300); screenshot("step_N");'
    ```
+
+   **IMPORTANT — Trigger discipline:** LT/RT are analog triggers, not digital
+   buttons. `tap("rt")` and `tap("lt")` silently do nothing. Use `tap_trigger`
+   or the explicit `set_axis` pattern. Valid trigger names: `"lt"`, `"rt"`,
+   `"left_trigger"`, `"right_trigger"`.
+
+   **IMPORTANT — scroll discipline:** `scroll(direction, count, delay_ms)`
+   does N sequential taps with a 200ms hold per press, pausing `delay_ms`
+   between releases. Valid directions: `"dpad_up"` / `"up"`, `"dpad_down"` /
+   `"down"`, `"dpad_left"` / `"left"`, `"dpad_right"` / `"right"`.
 
    Never batch multiple inputs. The screenshot after each step is your only
    defense against drift.
@@ -598,10 +694,8 @@ by vision, retry the task. If Tier 3 fails, try it once more from the start.
 dump a full diagnostic:
 - Screenshot of the current screen
 - The current `goal.json` contents
-- The contents of `screenshots/$RUN_ID/discrepancies.jsonl` (every mismatch
-  logged during this session)
-- The last 5 vision model JSON responses (the `match`, `screen`, `options`,
-  and `actual_screen` fields) from `screenshots/$RUN_ID/vision_log.jsonl`
+- The last 5 lines of `screenshots/$RUN_ID/run_log.jsonl` (prompt, response, assessment, decision fields)
+- The last 10 lines of `screenshots/$RUN_ID/daemon_events.jsonl` (if `--log-json` was used)
 
 Only then report the discrepancy to the user. **Do NOT clean up. Do NOT
 kill the daemon or the game.** Preserve state for debugging.
@@ -625,26 +719,35 @@ If at any point the vision subagent's JSON reads like it is cataloging menu
 options rather than confirming a pre/post condition, **re-read `goal.json`**
 and re-anchor to the current task. The agent is drifting into EXPLORE mode.
 
-### Vision discrepancy tracking
+### Run log and diagnostics
 
-The agent MUST maintain two per-run log files in `screenshots/$RUN_ID/`:
+The agent MUST maintain a single per-run log file: `screenshots/$RUN_ID/run_log.jsonl`.
+This replaces the previous multi-file approach (`vision_log.jsonl`,
+`discrepancies.jsonl`, `state.json`). Each line captures one decision cycle:
+prompt sent, vision response, assessment, decision, and plan.
 
-**`vision_log.jsonl`** — append one line after every `menu-vision` call:
+**`run_log.jsonl`** — one line per step, written via `nhl-input --log-step`:
 
 ```json
-{"step": "014", "screenshot": "screenshots/.../step_014.png", "match": true, "screen": "CUSTOMIZE", "options": ["CREATION ZONE", "CUSTOMIZE AI", ...], "selected": "ROSTER MANAGEMENT", "confidence": "high"}
+{"step":18,"screenshot":"screenshots/.../018_step_018.png",
+ "vision_prompt":"Look at this screenshot...",
+ "vision_response":{"match":true,"screen":"CUSTOMIZE","options":[...],"confidence":"high"},
+ "assessment":"match_confirmed","decision":"navigate",
+ "plan":"Press A to enter SAVE/LOAD/DELETE submenu"}
 ```
 
-**`discrepancies.jsonl`** — append one line when `"match": false` or the
-options cross-check fails:
+**`daemon_events.jsonl`** — written automatically by the daemon when started with
+`--log-json`. Records command scripts and screenshot paths with timestamps:
 
 ```json
-{"step": "014", "expected": "CUSTOMIZE", "expected_options": ["CREATION ZONE", ...], "actual": "SAVE/LOAD/DELETE", "actual_options": ["SAVE", "LOAD", "DELETE"], "action_taken": "pressed B, entered RECOVERY tier 1"}
+{"ts":"2026-07-10T23:07:22.872Z","event":"command","script":"tap(\"a\"); wait(2.0); screenshot(\"step_006\");"}
+{"ts":"2026-07-10T23:07:27.469Z","event":"screenshot","path":"screenshots/.../006_step_006.png"}
 ```
 
 These files are dumped as part of Tier 4 escalation diagnostics. They are
-also the agent's best defense against drift — a growing `discrepancies.jsonl`
-signals that the agent has been pressing buttons without verification.
+also the agent's best defense against drift — a gap between the screenshot
+count and log entry count (detected by `check-log.sh`) signals that the
+agent has been pressing buttons without introspection.
 
 ### Update map.md
 
@@ -691,6 +794,15 @@ kill $(pgrep -f "nhl-input --daemon") 2>/dev/null; sleep 1
 2. Verify the daemon has a controller running: look for "Microsoft X-Box One pad" in `evtest` output
 3. If the daemon crashed, restart it with step 5 (shared infrastructure)
 4. The daemon performs a 3s warmup at startup — no per-command warmup is needed
+5. **Trigger inputs (LT/RT):** `tap("rt")` and `tap("lt")` silently do nothing
+   because triggers are analog axes, not digital buttons. Use `tap_trigger("rt",
+   500)` or the explicit `set_axis` pattern:
+   ```
+   set_axis("right_trigger", 1.0); wait(0.5); set_axis("right_trigger", 0.0); wait(0.4);
+   ```
+6. **Multi-tap batch inputs:** Never use shell `for` loops to send parallel
+   `--send` commands — the daemon serializes them, causing timeouts. Use
+   `scroll("dpad_down", 6, 300)` inside a single `--send` instead.
 
 ### Optional: FPS cap with MangoHud
 

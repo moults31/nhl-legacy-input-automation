@@ -1,6 +1,7 @@
 use std::fs;
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 pub trait Observer: Send + Sync {
     fn is_connected(&self) -> bool;
@@ -54,6 +55,7 @@ pub struct ScreenCaptureObserver {
     run_dir: Mutex<Option<PathBuf>>,
     counter: Mutex<u32>,
     watch_path: Mutex<Option<PathBuf>>,
+    json_log: Mutex<Option<Arc<Mutex<BufWriter<fs::File>>>>>,
 }
 
 impl ScreenCaptureObserver {
@@ -64,6 +66,7 @@ impl ScreenCaptureObserver {
             run_dir: Mutex::new(None),
             counter: Mutex::new(0),
             watch_path: Mutex::new(None),
+            json_log: Mutex::new(None),
         }
     }
 
@@ -73,6 +76,10 @@ impl ScreenCaptureObserver {
 
     pub fn set_watch(&self, path: PathBuf) {
         *self.watch_path.lock().unwrap() = Some(path);
+    }
+
+    pub fn set_json_log(&self, writer: Arc<Mutex<BufWriter<fs::File>>>) {
+        *self.json_log.lock().unwrap() = Some(writer);
     }
 
     fn find_window(&self) -> Option<xcap::Window> {
@@ -172,6 +179,23 @@ impl ScreenCaptureObserver {
         drop(counter);
 
         tracing::info!("screenshot saved: {}", path.display());
+
+        if let Some(ref json_log) = *self.json_log.lock().unwrap() {
+            let ts = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+            let path_str = path.to_string_lossy().to_string();
+            if let Ok(event) = serde_json::to_vec(&serde_json::json!({
+                "ts": ts,
+                "event": "screenshot",
+                "path": path_str,
+            })) {
+                if let Ok(mut writer) = json_log.lock() {
+                    let _ = writer
+                        .write_all(&event)
+                        .and_then(|_| writer.write_all(b"\n"))
+                        .and_then(|_| writer.flush());
+                }
+            }
+        }
 
         if let Some(ref watch) = *self.watch_path.lock().unwrap() {
             if let Err(e) = img.save(watch) {
