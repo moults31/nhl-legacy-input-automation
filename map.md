@@ -136,7 +136,7 @@ MAIN MENU
 | Be A GM Hub (any phone option) | See be-a-gm-hub section below |
 | SEASON MODE | PLAY → `↓` ×4 (CAREER), `A` → `↓` ×2 (SEASON MODE), `A` → `A` (NEW) |
 | Season Mode Hub | Season Mode → selection → save → hub (see Season Mode section) |
-| Season Mode Trade | Hub → GM OPTIONS → `↓` (TRADE PLAYERS), `A` |
+| Season Mode Trade | Hub → GM OPTIONS → `↓` (TRADE PLAYERS), `A`. Left column locked to user team. |
 
 ### Season Mode Central Hub Navigation
 
@@ -198,18 +198,44 @@ After simming, the calendar shows scores on completed game dates (e.g.,
 "L 3-0"), the team record updates, the Team Leaders panel populates with
 player stats, and the Message Center populates with league news.
 
-### Season Mode Trade Screen
+### Season Mode Trade Screen vs. Player Movement
 
-Accessed via GM OPTIONS → TRADE PLAYERS. Two-column 5-slot layout (not 6 like
-Player Movement in CUSTOMIZE). Cycling teams with LT/RT. Player selection list
-shows POS, PLAYER, TRADE VALUE (bar), OVR, AGE, SAL. Filter with LB/RB
-(All Skaters, Forwards, Defense, Goalies). A to select, X to execute (presumed).
+The Season Mode trade screen (`Hub → GM OPTIONS → TRADE PLAYERS`) is fundamentally
+different from the CUSTOMIZE Player Movement screen. Do not assume the same
+controls apply.
 
-**HAZARD:** The trade screen opens with **random teams** by default (not
-the user's team). Agent must LT/RT cycle to the user's team on each side.
+| Feature | Player Movement (CUSTOMIZE) | Trade Screen (Season Mode Hub) |
+|---------|---------------------------|-------------------------------|
+| Left column team | Cycle with LT/RT | **Locked** — user-controlled team |
+| Right column team | Cycle with LT/RT | Access with d-pad right, cycle with LT/RT |
+| Default rows | Shows a page of players immediately | Empty placeholders (dashes) — press A to open |
+| Slots per side | 6 | 5 |
+| Execute | X | X (presumed) |
 
-**Player list controls:** `A` select, `B` back, `LB/RB` filter (All
-Skaters / Forwards / Defense / Goalies), `LS` sort, `RS` player info.
+**Why the left column is locked:** In Season Mode, you are the user-controlled
+team. The left column represents your team and cannot be cycled. If multiple
+teams are user-controlled, they are selected from the main Season Mode menu,
+not in the trade screen.
+
+**Player selection flow (per slot):**
+1. Press `A` on an empty placeholder row → opens player list
+2. D-pad up/down to scroll players
+3. Press `A` to stage the selected player in that slot
+
+**Team cycling (right column only):**
+1. Press d-pad right to activate the right column
+2. Use LT/RT triggers to cycle the CPU-controlled team
+
+**Player list controls:**
+- `A` select player, `B` back
+- `LB/RB` filter: All Skaters / Forwards / Defense / Goalies
+- `LS` sort, `RS` player info
+- Columns in player list: POS, PLAYER, TRADE VALUE (bar), OVR, AGE, SAL
+
+**HAZARD:** Attempting LT/RT on the left column does nothing because the
+user team is locked. This differs from Player Movement where both columns are
+freely cyclable. Agents mistaking the trade screen for Player Movement will
+waste cycles trying to trigger-cycle the left team.
 
 ### Season Mode Team Selection
 
@@ -244,8 +270,9 @@ appears ("You must have at least one user controlled team to continue").
   Standings. D-pad left in the calendar view opens Help.
 - **Message Center:** Populates automatically with league news (trades,
   game results, signing announcements) presented as social-media posts.
-- **Trade screen default teams:** The trade screen opens with random
-  teams, not the user's team. Cycle with LT/RT on each panel.
+- **Trade screen default teams:** The trade screen left column is locked
+  to the user-controlled team. The right column defaults to a random CPU team.
+  Cycle the right column only with LT/RT after pressing d-pad right.
 
 ### On-screen button hints
 
