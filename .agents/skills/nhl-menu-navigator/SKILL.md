@@ -737,6 +737,22 @@ dialogs can appear in any order or not at all. After each `A`-press to
 dismiss, take a screenshot and analyze it via the two-tier gate below before
 sending the next input.
 
+**HARD BLOCK — Profile Activation Required:** If the OCR or vision response
+contains the text _"activate a lead NHL Legacy Edition profile"_ or
+_"Profile Management screen to activate"_, this is **NOT** a dismissible
+first-launch dialog. It is a hard environmental blocker:
+
+1. Navigate **once** to PROFILE MANAGEMENT (CUSTOMIZE → ↓×5, A).
+2. Check OCR for `"Xbox 360 Controller"` rows beyond `"User"`.
+3. If physical controllers are detected → **HALT immediately**.
+   Assessment: `halt`. Plan: `"Physical controllers detected in PROFILE
+   MANAGEMENT. Disconnect all physical controllers and relaunch the game."`
+4. If only `"User"` is present → press A or Y on the User row, then try
+   selecting Activate Profile. If activation fails after 2 attempts → **HALT**.
+5. Do NOT dismiss the dialog and attempt to continue — the dialog will
+   reappear on every subsequent save/load attempt. Do NOT waste steps on
+   RECOVERY tiers for this blocker.
+
 ### Gate: Analysis liveness (applies to ALL phases)
 
 Every screenshot MUST be analyzed before any input is sent. There are two
@@ -755,6 +771,55 @@ immediately. The loop is: INPUT → SCREENSHOT → (OCR then vision fallback)
 ### Step 3: Execution loop
 
 For **each task** in `goal.json` (in order):
+
+#### 3a.0. Startup Checkpoint Sequence
+
+When the goal is to reach **Main Menu** or **Season Mode Hub** from game
+boot (title screen), execute this deterministic sequence. **No per-step LLM
+reasoning** — the path is fully known from `map.md`. Screenshot at
+checkpoints only.
+
+```
+1. SCREENSHOT checkpoint: verify Title Screen ("NHL LEGACY EDITION" or
+   "Press Start" visible via OCR). If not: wait 5s, retry up to 3x.
+
+2. Press Start, wait 3s. Screenshot.
+   - If Autosave Information visible → A to dismiss.
+   - If Profile Warning visible → ↓ (highlight "Continue Without Saving"), A.
+   - **If Profile Activation Required dialog visible ("activate a lead NHL
+     Legacy Edition profile") → HALT. See PROFILE MANAGEMENT in map.md.
+     Physical controller interference.**
+   - If no dialog, you're advancing past the title → continue.
+
+3. Verify Main Menu reached (OCR: "PLAY", "COMMUNITY", "CUSTOMIZE" visible).
+   If not: press A once, wait 2s, retry.
+
+4. From Main Menu (default focus = COMMUNITY, position 2):
+   - Target PLAY (position 1): ↑, A. Wait 2s, screenshot.
+   - Target CUSTOMIZE (position 3): ↓, A. Wait 2s, screenshot.
+
+5. From PLAY submenu:
+   - Target CAREER (position 5): scroll("dpad_down", 4, 300); wait(0.5); tap("a"); wait(2.5);
+
+6. From CAREER submenu:
+   - Target SEASON MODE (position 3): scroll("dpad_down", 2, 300); wait(0.5); tap("a"); wait(2.5);
+
+7. From SEASON MODE entry (NEW / LOAD):
+   - Target LOAD: tap("dpad_down"); wait(0.5); tap("a"); wait(3.0);
+
+8. From LOAD file list:
+   - Screenshot (checkpoint). Select save file with dpad_down + A.
+
+Total commands: ~10 button presses. Expected execution: ~30s input time.
+With 4 screenshot checkpoints: ~2 minutes total (down from ~9 minutes).
+```
+
+Use `scroll()` for batched dpad presses (the entire scroll runs
+atomically inside the daemon). The `map.md` Navigation Reference table
+documents exact scroll counts.
+
+After reaching the final checkpoint (Season Mode Hub or Main Menu), begin
+the standard PRE-CHECK gate below.
 
 #### 3a. PRE-CHECK
 
@@ -866,6 +931,7 @@ This returns JSON with:
 | OCR-A1 | At least one `lines[].text` matches the expected `screen_title` from `map.md` (case-insensitive substring) | Cannot identify screen. Fall back to Tier 1 (menu-vision). |
 | OCR-A2 | ≥70% of the expected options for this screen (from `map.md` Navigation Reference or `goal.json`) are found in `all_text` (case-insensitive) | OCR may have garbled text. Fall back to Tier 1. |
 | OCR-A3 | `selected_index` is non-null and `lines[selected_index].text` matches at least one expected option | Cannot determine cursor position. Fall back to Tier 1, but you may still use the `all_text` to identify the screen. |
+| OCR-A4 | `all_text` does NOT contain BOTH hub-level items ("GM OPTIONS", "CUSTOMIZE", "QUIT SEASON MODE") AND flyout sub-options ("EDIT PLAYER", "SETTINGS", "SAVE SEASON") simultaneously | A flyout is OPEN. The OCR result is valid but any d-pad input will be intercepted by the flyout submenu instead of navigating the hub. Plan = "B (close flyout)", press B, re-screenshot, re-run OCR. Do NOT navigate until the flyout options disappear from `all_text`. |
 
 **Interpreting OCR results for navigation:**
 
@@ -873,20 +939,27 @@ If all OCR-A checks pass:
 1. The identified screen is the one whose title matched in OCR-A1.
 2. The selected option is `lines[selected_index].text`.
 3. Look up this screen in `map.md` Navigation Reference to determine the next button press(es) to reach the destination.
-4. Proceed to step 4 (INPUT) — skip steps 2–3 (CHECK/PLAN via vision).
-5. Log the OCR result as follows:
+4. **Deterministic path check:** If the button sequence from the current
+   screen to the destination is fully specified in `map.md` Navigation
+   Reference (exact button names, exact scroll counts), emit the plan
+   directly from the table — skip LLM plan generation. Plan format:
+   `"map.md: {button_sequence}"` (e.g., `"map.md: ↓×2, A"`).
+   This signals zero LLM reasoning was used for this step and saves 25-40s.
+5. **If the path is NOT in the table:** compute the distance from the
+   current selection to the target option from `map.md` or `goal.json` and
+   generate a `scroll()` + `tap()` command. This is a single deterministic
+   calculation (how many dpad presses to the target?) — no LLM reasoning
+   needed.
+6. Proceed to step 4 (INPUT) — skip steps 2–3 (CHECK/PLAN via vision).
+5. Log the OCR result via `nhl-input --log-step`. If the plan came from
+   the deterministic path check (step 4 above), use the `"map.md:"` prefix:
    ```bash
-   # Build a vision-compatible response from OCR data.
-   # all_text_ocr is the raw OCR all_text, split into lines.
-   # options_ocr is the expected options from map.md for this screen.
-   # selected_text is lines[selected_index].text.
-   cat > /tmp/nhl_response.txt << 'RESPEOF'
-   {"all_text":["<line1>","<line2>",..."],"screen_title":"<matched>","layout":"list","layout_description":"OCR fast-path (Tier 0)","options":["<opt1>","<opt2>",..."],"selected":"<selected_text>","button_hints":[],"gameplay":false,"confidence":"high","ocr_source":true}
-   RESPROMPTEOF
-   ./target/debug/nhl-input --run-id "$RUN_ID" --step N --screenshot "screenshots/$RUN_ID/NNN_step_NNN.png" \
-     --prompt-file /tmp/nhl_prompt.txt --response-file /tmp/nhl_response.txt \
-     --assessment goal_match --decision navigate --plan "<one-liner>"
+   ./target/debug/nhl-input --run-id "$RUN_ID" --step N --screenshot ... \
+     --assessment goal_match --decision navigate \
+     --plan "map.md: dpad_down, A"  # or "map.md: ↓×6, A" etc.
    ```
+   If the plan was computed (step 5 — distance calculation), use a short
+   descriptive plan like `"scroll 2 down then A"`.
 6. The `ocr_source: true` field in the log entry marks this step as OCR-powered for retrospective analysis.
 
 **OCR failure → Tier 1 fallback:**
@@ -1019,6 +1092,21 @@ Update `goal.json` on disk after every status change.
 **YOU ARE NOT ALLOWED TO ABORT A TASK without exhausting all four tiers.**
 Each tier must be attempted with screenshot verification before escalating.
 
+**Tier 0 — Check for unresolvable environmental blockers (check before any B-press):**
+
+Before entering Tier 1, check if the current screen is an unresolvable
+blocker that cannot be fixed through navigation:
+
+| Blocker | OCR trigger | Action |
+|---------|-------------|--------|
+| Profile Activation Required | `"activate a lead NHL Legacy Edition profile"` or `"Profile Management screen to activate"` | Navigate ONCE to PROFILE MANAGEMENT, check for `"Xbox 360 Controller"` rows. If found → **HALT** (physical controllers). If only `"User"` and activation fails after 2 attempts → **HALT**. |
+| PROFILE MANAGEMENT (same screen for 10+ consecutive steps) | `screen_title` = "PROFILE MANAGEMENT" in 10+ log entries | **HALT** — stuck in profile management loop. Physical controller interference suspected. |
+| Same blocking dialog 3+ times in a run | Same dialog text appears 3+ times | **HALT** — dialog reappears despite dismissal. Cannot be resolved through navigation. |
+
+If an unresolvable blocker is detected: set assessment = `halt`, decision =
+`halt`, and escalate to Tier 4 diagnostic dump. Do NOT attempt Tiers 1–3 for
+environmental blockers — they waste steps and will not resolve the issue.
+
 **Tier 1 — One-step back**: Press `B`, wait 1.5s, screenshot. Run the vision
 prompt via `menu-vision` (use **exhaustive** — you are lost, don't assume
 you know the screen). Run Pass A checks. Is this a screen you
@@ -1029,6 +1117,22 @@ recognize from `map.md`? If yes, re-plan from here. If not, go to Tier 2.
 Main Menu, CUSTOMIZE menu, or Roster Management submenu. Verify with the
 vision prompt and cross-check with `map.md`. If you complete 10 presses
 without reaching an anchor, go to Tier 3.
+
+**Flyout trap recovery (special case):** If you find yourself on EDIT PLAYER
+or any other CUSTOMIZE flyout sub-screen (e.g., SETTINGS, SAVE SEASON) when
+you expected to be at a Season Mode hub screen:
+1. The CUSTOMIZE flyout intercepted your navigation. Press `B` once to
+   close the sub-screen.
+2. Press `B` again to close the CUSTOMIZE flyout itself (may require a
+   second B press — the first closes the sub-screen, the second retracts
+   the flyout).
+3. Screenshot. Verify the flyout is fully closed: the OCR `all_text` must
+   NOT contain "EDIT PLAYER", "SETTINGS", or "SAVE SEASON" alongside hub
+   items like "GM OPTIONS" or "QUIT SEASON MODE".
+4. If flyout sub-options are still visible, press `B` again and re-screenshot.
+5. Once the hub is clean, re-navigate to your target using the documented
+   path from `map.md` Navigation Reference. Before any d-pad input, verify
+   flyout state per OCR-A4.
 
 **Tier 3 — Full reset from Main Menu**: Press `Start` → navigate to "Quit"
 → "Main Menu" with the d-pad and `A`. Wait 5s for transition. Screenshot
@@ -1072,6 +1176,21 @@ The vision subagent returns a pure description every time — there is no
 3. If the response seems contradictory (e.g. `screen_title` says one thing
    but `all_text` or `options` tells a different story), flag as
    `inconsistent` and trigger INTERRUPT, regardless of `confidence` level.
+
+### Hard blocker detection (check BEFORE every input)
+
+Before sending any input, scan the OCR/vision response for these
+high-signal strings that indicate an unresolvable environmental blocker:
+
+| Signal | Meaning | Action |
+|--------|---------|--------|
+| `"activate a lead NHL Legacy Edition profile"` | Profile Activation Required dialog | HALT — see PROFILE MANAGEMENT in map.md |
+| `"Profile Management screen to activate"` | Profile Activation Required dialog | HALT — physical controller interference |
+| `"Xbox 360 Controller"` + `"PROFILE MANAGEMENT"` | Physical controllers detected in PROFILE MANAGEMENT | HALT — disconnect physical controllers and relaunch |
+
+If any of these are detected plus `assessment = halt` and `decision = halt`
+are set in the step log, skip all RECOVERY tiers and escalate directly to
+Tier 4 diagnostic dump.
 
 ### Run log and diagnostics
 
