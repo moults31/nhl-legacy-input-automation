@@ -76,7 +76,21 @@ MAIN MENU
 │   ├── EA SPORTS MEDIA HUB
 │   ├── FAVORITE TEAM
 │   ├── OFFER CODE ENTRY
-│   ├── PROFILE MANAGEMENT
+│   ├── PROFILE MANAGEMENT          [*]
+│   │   * Table layout: 3 columns (Profile, Lead, Activated). Rows for
+│   │     every detected controller: virtual uinput ("User") + any physical
+│   │     Xbox 360 controllers ("Xbox 360 Controller N").
+│   │   * "Profile Options" section at bottom with "Activate Profile".
+│   │   * **HAZARD (hard blocker):** "Activate Profile" is INERT when
+│   │     physical controllers are connected alongside the virtual uinput
+│   │     controller. There is no Xbox Live sign-in backend in the recomp
+│   │     environment to complete activation.
+│   │   * **HAZARD (Guide button):** The Guide button opens the recomp
+│   │     overlay (Performance/Display/Rendering), NOT the Xbox profile
+│   │     sign-in menu. Profile activation via Guide is impossible through
+│   │     uinput.
+│   │   * **Resolution:** Disconnect all physical controllers and relaunch
+│   │     the game. Only the virtual uinput controller can be active.
 │   ├── ROSTER MANAGEMENT           [A]
 │   │   ├── TEAM ROSTERS
 │   │   ├── PLAYER MOVEMENT              → Two-column trade screen
@@ -119,6 +133,21 @@ MAIN MENU
 
 | Destination | Path from Main Menu |
 |---|---|
+
+### Startup Paths (from Game Boot)
+
+| Destination | Path from Title Screen |
+|---|---|
+| Main Menu | Start, [Autosave: A], [Profile Warning: ↓ (Continue Without Saving), A], [Favorite Team: any, A], [Tutorial: ↓ (No), A] |
+| Season Mode Hub | Main Menu → ↑, A (PLAY), ↓×4, A (CAREER), ↓×2, A (SEASON MODE), ↓, A (LOAD), ↓, A (select save) |
+| Season Mode Hub (from Main Menu) | ↑, A (PLAY), ↓×4, A (CAREER), ↓×2, A (SEASON MODE), ↓, A (LOAD), ↓, A (select save) |
+
+**Note:** The first-launch dialogs (Autosave, Profile Warning, Favorite Team, Tutorial) may appear in any order or not at all between the Title Screen and Main Menu. See First Launch Hazards section for dismissal instructions.
+
+### How to reach a destination
+
+| Destination | Path from Main Menu |
+|---|---|
 | Team Selection (Play Now) | `A` (PLAY), `A` (PLAY NOW) |
 | Quick Modes | `A` (PLAY), `↓ ↓` (QUICK MODES), `A` |
 | Training | Quick Modes → `↓ ↓ ↓` (Training), `A` |
@@ -136,7 +165,9 @@ MAIN MENU
 | Be A GM Hub (any phone option) | See be-a-gm-hub section below |
 | SEASON MODE | PLAY → `↓` ×4 (CAREER), `A` → `↓` ×2 (SEASON MODE), `A` → `A` (NEW) |
 | Season Mode Hub | Season Mode → selection → save → hub (see Season Mode section) |
-| Season Mode Trade | Hub → GM OPTIONS → `↓` (TRADE PLAYERS), `A` |
+| Season Mode Trade | Hub → GM OPTIONS → `↓` (TRADE PLAYERS), `A`. Left column locked to user team. |
+| Season Mode Save & Exit | Hub → `↓` ×8 (QUIT SEASON MODE), `A` → wait for dialog → `↑` (Save and Exit), `A` |
+| Season Mode Save (only) | Hub → `↓` ×7 (CUSTOMIZE), `A` → `↓` ×2 (SAVE SEASON), `A` → select file, `A` → QWERTY keyboard → Done |
 
 ### Season Mode Central Hub Navigation
 
@@ -198,18 +229,83 @@ After simming, the calendar shows scores on completed game dates (e.g.,
 "L 3-0"), the team record updates, the Team Leaders panel populates with
 player stats, and the Message Center populates with league news.
 
-### Season Mode Trade Screen
+### Season Mode Trade Screen vs. Player Movement
 
-Accessed via GM OPTIONS → TRADE PLAYERS. Two-column 5-slot layout (not 6 like
-Player Movement in CUSTOMIZE). Cycling teams with LT/RT. Player selection list
-shows POS, PLAYER, TRADE VALUE (bar), OVR, AGE, SAL. Filter with LB/RB
-(All Skaters, Forwards, Defense, Goalies). A to select, X to execute (presumed).
+The Season Mode trade screen (`Hub → GM OPTIONS → TRADE PLAYERS`) is fundamentally
+different from the CUSTOMIZE Player Movement screen. Do not assume the same
+controls apply.
 
-**HAZARD:** The trade screen opens with **random teams** by default (not
-the user's team). Agent must LT/RT cycle to the user's team on each side.
+| Feature | Player Movement (CUSTOMIZE) | Trade Screen (Season Mode Hub) |
+|---------|---------------------------|-------------------------------|
+| Left column team | Cycle with LT/RT | **Locked** — user-controlled team |
+| Right column team | Cycle with LT/RT | Access with d-pad right, cycle with LT/RT |
+| Default rows | Shows a page of players immediately | Empty placeholders (dashes) — press A to open |
+| Slots per side | 6 | 5 |
+| Execute | X | **X (confirmed)**. On-screen hint says "Y Execute Trade" but Y does nothing — X is the actual execute button. |
 
-**Player list controls:** `A` select, `B` back, `LB/RB` filter (All
-Skaters / Forwards / Defense / Goalies), `LS` sort, `RS` player info.
+**Why the left column is locked:** In Season Mode, you are the user-controlled
+team. The left column represents your team and cannot be cycled. If multiple
+teams are user-controlled, they are selected from the main Season Mode menu,
+not in the trade screen.
+
+**Player selection flow (per slot):**
+1. Press `A` on an empty placeholder row → opens player list
+2. D-pad up/down to scroll players
+3. Press `A` to stage the selected player in that slot
+
+**Team cycling (right column only):**
+1. Press d-pad right to activate the right column
+2. Use LT/RT triggers to cycle the CPU-controlled team
+
+**Team rotation order (NHL, alphabetical by city):**
+Teams cycle in this order with RT (forward) and LT (backward):
+`ANA → BOS → BUF → CGY → CAR → CHI → COL → CBJ → DAL → DET → EDM → FLA → LAK → MIN → MTL → NSH → NJD → NYI → NYR → OTT → PHI → PIT → SJS → STL → TBL → TOR → VAN → WSH → WPG → (wraps to ANA)`
+
+To jump from team X to team Y, count the number of RT presses needed
+and batch them in a single `--send` command. Verify with OCR after the
+batch — do not screenshot after every individual press.
+
+**Player list controls:**
+- `A` select player, `B` back
+- `LB/RB` filter: All Skaters / Forwards / Defense / Goalies
+- `LS` sort, `RS` player info
+- Columns in player list: POS, PLAYER, TRADE VALUE (bar), OVR, AGE, SAL
+
+**HAZARD:** Attempting LT/RT on the left column does nothing because the
+user team is locked. This differs from Player Movement where both columns are
+freely cyclable. Agents mistaking the trade screen for Player Movement will
+waste cycles trying to trigger-cycle the left team.
+
+#### Trade Acceptance / Rejection Factors
+
+CPU-controlled teams evaluate trade offers and can accept or reject them.
+A rejection dialog appears with a GM message and an "OK" button to dismiss.
+An acceptance shows a confirmation dialog also requiring "OK" to confirm.
+
+**Experiment results (Calgary user team vs Anaheim CPU):**
+
+| Offer (from CGY) | Ask (from ANA) | Result | Likely factor |
+|---|---|---|---|
+| C. RESCHNY (C, 70 OVR, $0.575M, AHL) | C. KREIDER (LW, 90 OVR, $4.86M) | **Rejected** | Insulting — CPU: "almost insulting. offer up a lot more" |
+| M. MCTAVISH (C, 82 OVR, $5.235M) | L. CARLSSON (C, 83 OVR, $0.71M) | **Rejected** | Salary imbalance — CPU: "won't start making bad deals now. offer me way more" |
+| J. HUBERDEAU (LW, 86 OVR, $7.85M) | L. BOELIUS (D, 67 OVR, $0.575M) | **Accepted** | CPU wins big — massive upgrade for cheap prospect |
+
+**Observed factors affecting acceptance likelihood:**
+
+- **Salary cap value is critical.** Even when OVR ratings are close (82 vs 83),
+  a large salary disparity ($5.235M vs $0.71M) triggered rejection. The CPU
+  weighs the financial impact heavily.
+- **OVR gap alone isn't enough.** A 1-point OVR difference with massive salary
+  gap was rejected. The CPU demands clear surplus value.
+- **CPU must perceive a win.** Acceptances occurred when the CPU received a
+  dramatically better player (86 OVR) in exchange for a throwaway prospect
+  (67 OVR). The CPU evaluates total value — OVR, salary, age, potential — and
+  requires a net benefit.
+- **Trade value bar** on the player list (a visual bar in the TRADE VALUE
+  column) may represent the game's internal valuation. Comparing bars between
+  offered and requested players provides a visual rough estimate.
+- Once a player is staged in a slot, they are **removed from the other side's
+  player list** — you cannot trade for a player already offered.
 
 ### Season Mode Team Selection
 
@@ -226,9 +322,54 @@ appears ("You must have at least one user controlled team to continue").
 
 ### Game Menu (Start in Season Mode)
 
-- EDIT PLAYER
-- SETTINGS (RULES, GAMEPLAY, VOLUME, VISUAL, USER CELEBRATIONS, CONTROLLER, VIDEO CALIBRATION)
-- SAVE SEASON
+**Note:** Pressing Start from the hub toggles between menu view and calendar view
+(not a separate Game Menu overlay). The CUSTOMIZE flyout (open with A on CUSTOMIZE
+hub option) provides EDIT PLAYER, SETTINGS, and SAVE SEASON.
+
+During actual gameplay (ice rink), pressing Start opens the in-game pause menu which includes Quit options.
+
+### Season Mode Save/Exit Flows
+
+There are two distinct paths to save and exit Season Mode:
+
+#### Path 1: QUIT SEASON MODE → Save and Exit
+
+From the hub menu view: navigate to `QUIT SEASON MODE` (option 8), press A.
+This opens a confirmation dialog with three options:
+
+1. **Yes** — Exit without saving
+2. **Save and Exit** — Save progress and exit to main menu
+3. **No** — Cancel (highlighted by default)
+
+**NOTE:** The dialog appears over the **calendar view** (not menu view). To
+select "Save and Exit", press `↑` once from the default "No" selection.
+
+**HAZARD:** Pressing A on QUIT SEASON MODE from the hub opens a loading screen
+(~5s), then the confirmation dialog appears over the calendar view. The dialog
+may be partially obscured by other hub panels.
+
+#### Path 2: CUSTOMIZE → SAVE SEASON
+
+From the hub menu view: navigate to `CUSTOMIZE` (option 7), press A to open the
+CUSTOMIZE flyout, then scroll to `SAVE SEASON` (option 3), press A.
+
+This opens a save file browser showing existing saves (e.g., SEASON1 through
+SEASON5) plus a "Create new Season" option. Selecting an existing save opens a
+**QWERTY keyboard** with the save name pre-filled (e.g., "SEASON1_"). Press
+**Done** to confirm overwrite.
+
+Keyboard controls: `A` select key, `B` cancel, `Y` Caps, `LB` Shift, `RT` Space,
+`LT` special keys, `RS` clear, `X` back, `Done` button on right side.
+
+**NOTE:** This only saves, it does NOT exit. You must still use QUIT SEASON MODE
+or navigate the menu hierarchy to leave Season Mode.
+
+#### How to Return to Main Menu from Season Mode
+
+- **Without saving:** QUIT SEASON MODE → Yes
+- **With saving:** QUIT SEASON MODE → Save and Exit
+- B does NOT exit the hub — in the hub it toggles between menu view and calendar
+  view. To back out of Season Mode entirely, use QUIT SEASON MODE.
 
 ### SEASON MODE Operational Notes
 
@@ -238,14 +379,23 @@ appears ("You must have at least one user controlled team to continue").
   from the hub), Season Mode requires explicitly selecting a game date on
   the calendar and choosing "Simulate up to this day" from the dialog.
 - **B toggles hub view:** Pressing B from the menu view enters the
-  calendar-focused view (no left menu panel). Pressing Start returns the
-  full menu.
+  calendar-focused view (no left menu panel). B does NOT exit the hub.
+- **Start toggles hub view:** Pressing Start from the hub toggles between
+  menu view and calendar view. It does NOT open a separate Game Menu overlay.
 - **Unlabeled input:** A on a non-game date in the calendar goes to Team
   Standings. D-pad left in the calendar view opens Help.
 - **Message Center:** Populates automatically with league news (trades,
   game results, signing announcements) presented as social-media posts.
-- **Trade screen default teams:** The trade screen opens with random
-  teams, not the user's team. Cycle with LT/RT on each panel.
+- **Trade screen default teams:** The trade screen left column is locked
+  to the user-controlled team. The right column defaults to a random CPU team.
+  Cycle the right column only with LT/RT after pressing d-pad right.
+- **Loading screens:** QUIT SEASON MODE triggers a loading screen (~5s)
+  before the confirmation dialog appears. The dialog appears over the
+  calendar view, not the menu view.
+- **Save file browser:** Both LOAD and SAVE show save files sorted by
+  last-modified date (newest first). The SAVE screen offers "Create new
+  Season" at the top of the list. Selecting an existing save opens a
+  QWERTY keyboard for name editing before confirming the save.
 
 ### On-screen button hints
 
@@ -322,7 +472,11 @@ is a **two-column layout** for swapping players between teams.
   back out to the Customize menu.
 - When entering Player Movement, the left panel defaults to the first NHL
   team (Anaheim Ducks) and the right panel defaults to Free Agents. Both
-  panels can be independently set to any league/team.
+   panels can be independently set to any league/team.
+
+- **Team rotation order (NHL, alphabetical by city):**
+  `ANA → BOS → BUF → CGY → CAR → CHI → COL → CBJ → DAL → DET → EDM → FLA → LAK → MIN → MTL → NSH → NJD → NYI → NYR → OTT → PHI → PIT → SJS → STL → TBL → TOR → VAN → WSH → WPG → (wraps)`
+  Batch RT/LT presses in a single `--send` command using `tap_trigger("rt", 500)` repeated N times, then verify with OCR.
 
 ## BE A GM MODE
 
@@ -428,6 +582,7 @@ vision, then continue.
 | Profile Warning Screen | Options: "Sign In", "Retry", "Continue Without Saving" | `↓` to "Continue Without Saving", `A` |
 | Choose Your Favorite Team | Grid of NHL team logos with team names | Select any team with d-pad, `A` |
 | Tutorial prompt | Options: "Yes", "No" — asks "Would you like to enter Tutorial Mode?" | `↓` to "No", `A` |
+| **Profile Activation Required** | Dialog: "You need to activate a lead NHL Legacy Edition profile to be able to save or load your content" | **HALT — see PROFILE MANAGEMENT section below. This is NOT resolvable through navigation. Physical controller interference.** |
 
 The full possible chain is:
 ```
@@ -437,6 +592,48 @@ Title Screen (Start) → [Autosave?] → [Profile Warning?] → [Choose Favorite
 DO NOT assume a fixed order or that all dialogs appear. After each `A`-press
 to dismiss, take a screenshot and verify with vision before sending the next
 input.
+
+**NOTE:** The "Profile Activation Required" dialog does NOT appear during
+the first-launch sequence. It appears when attempting to LOAD or SAVE from
+any game mode entry screen (SEASON MODE, BE A GM, etc.) without an active
+lead profile. See the dedicated section below for handling this blocker.
+
+## Profile Activation Required (in-game hard blocker)
+
+This dialog appears when attempting to LOAD or SAVE from any game mode
+entry screen (SEASON MODE, BE A GM, etc.) when no controller has an active
+lead profile.
+
+| Field | Value |
+|-------|-------|
+| Recognition | OCR text: _"You need to activate a lead NHL Legacy Edition profile to be able to save or load your content. Please go to the NHL Legacy Edition Profile Management screen to activate a lead NHL Legacy Edition profile. You cannot do this inside of a game mode."_ |
+| Screen | Modal dialog with single "Okay" button (`A` to dismiss) |
+| Cause | One or more physical Xbox 360 controllers connected alongside the virtual uinput controller. The game enumerates all controllers but cannot activate a profile for any of them because there is no Xbox Live backend in the recomp environment. |
+| Verdict | **HARD BLOCK** — not resolvable through navigation. |
+
+**Detection procedure (OCR):**
+```
+Does all_text contain "activate a lead NHL Legacy Edition profile"?
+→ YES → navigate ONCE to PROFILE MANAGEMENT (CUSTOMIZE → ↓×5, A).
+  → OCR for "Xbox 360 Controller" in rows beyond "User".
+    → If found: HALT. Physical controllers detected.
+    → If NOT found (only "User"): try pressing Y or A on "User" row.
+      If Activate Profile fails after 2 attempts: HALT.
+→ NO → continue normal flow.
+```
+
+**Resolution:**
+1. Disconnect ALL physical Xbox 360 controllers from the system.
+2. Kill the game process (`scripts/kill-nhl.sh`).
+3. Re-launch (only virtual uinput controller active).
+4. The game will auto-activate the virtual controller as lead profile.
+5. Save/load operations now work.
+
+**Why the Guide button doesn't help:** On a real Xbox 360, pressing the
+Guide button opens the Xbox profile sign-in dashboard. In the recomp
+environment, the Guide button opens the recomp overlay (Performance,
+Display, Rendering, Upscaling settings). Profile activation through the
+Guide is impossible via uinput.
 
 ## Navigation Hazards
 
@@ -451,6 +648,28 @@ moving to CUSTOMIZE. To reach CUSTOMIZE, close the flyout first with `B`.
 - **Close**: `B` (single tap)
 - **Auto-close**: After ~15–30s of idle, the flyout retracts
 - **To reach CUSTOMIZE**: `B` to close flyout, then `↓`
+
+### CUSTOMIZE flyout (Season Mode Hub)
+
+The CUSTOMIZE flyout in the Season Mode hub behaves identically to the
+COMMUNITY flyout on the Main Menu: when open, it **intercepts all d-pad
+navigation**. Attempting to navigate from CUSTOMIZE to QUIT SEASON MODE
+with `↓` will scroll within the flyout submenu instead.
+
+- **Detection**: OCR or vision response will show both hub items
+  (e.g., "GM OPTIONS", "CUSTOMIZE", "QUIT SEASON MODE") AND flyout sub-options
+  (e.g., "EDIT PLAYER", "SETTINGS", "SAVE SEASON") simultaneously. If you see
+  both, the flyout is OPEN.
+- **Close**: `B` (single tap). Verify closure by re-screenshotting — the
+  flyout sub-options should disappear.
+- **Persistence hazard**: If the CUSTOMIZE flyout is open when QUIT SEASON
+  MODE is pressed, it **reappears after the loading screen**. The confirmation
+  dialog may be partially obscured, and B-pressing from the dialog can return
+  focus to the open flyout instead of the hub. Always B-close the flyout
+  BEFORE pressing A on any other hub item.
+- **At the hub, check flyout state**: Before any d-pad navigation from the
+  hub, verify the flyout is closed. If OCR/vision detects EDIT PLAYER or
+  SETTINGS text, press B and re-screenshot.
 
 ### Menu wrapping
 
@@ -470,6 +689,8 @@ dialog. To actually go back: `↑` (select Yes), `A`.
 | Screen transition (A to enter) | 2.0–3.0s |
 | Screen transition (B to go back) | 1.5–2.0s |
 | Game startup / title screens | up to 10s |
+| QUIT SEASON MODE dialog | 5.0s (loading screen before dialog) |
+| Trade execution (X) | 4.0–5.0s (dialog appears) |
 
 ### Tap duration
 
@@ -492,6 +713,23 @@ set_axis("right_trigger", 0.0);
 wait(0.8);
 ```
 
+## OCR Engine
+
+Switched from `ocrs` (neural network, models baked at build time) to **tesseract** (C library, system-installed) in
+`crates/observer`. Tesseract is dramatically more reliable on game UI text.
+
+- **System deps**: `sudo apt install libtesseract-dev tesseract-ocr-eng`
+- **Crate**: `tesseract = "0.15"` — high-level Rust bindings. Uses `tesseract-plumbing` and `tesseract-sys`.
+- **Page segmentation mode**: `PSM_AUTO` (3). Works well for single and two-column menu layouts.
+- **Output**: Word-level bounding boxes via `TessBaseApi::get_tsv_text(0)`, parsed into `OcrLine`/`OcrWord`.
+- **Performance**: ~2-5s per screenshot (debug build). Native C code, faster than ocrs.
+- **Selected index detection**: `find_selected_by_luminance` still used to pick the brightest line.
+  Works best when the highlighted menu item has higher luminance than background.
+- **Accuracy on NHL Legacy menus**: Highly reliable. Extracts menu items ("PLAY", "CUSTOMIZE", "LOAD"),
+  save file names ("SEASON1", "AUTOSAVE2"), timestamps, breadcrumbs, and bottom bar hints.
+  Some background/stylized text noise is normal.
+- **Sidecar auto-creation**: `--ocr` auto-writes `<screenshot>.ocr.json` with provenance for `--log-step`.
+
 ## Operational Gotchas
 
 - **Title screen**: Requires Start to advance, not A. Other screens accept A.
@@ -503,9 +741,18 @@ wait(0.8);
 - **Triggers (LT/RT)**: Analog axes. `tap("rt")` / `tap("lt")` silently do
   nothing. Use `tap_trigger("rt", 500)` or `set_axis("right_trigger", 1.0)`.
   See Player Movement Operational Notes for detailed trigger usage.
-- **Run ID validation bug**: `validate_run_id_neutral` enforces `len() == 19`,
-  so only `_run` suffix (19 chars) is accepted. `_explore` (23 chars) is
-  rejected. Tracked in `crates/app/src/main.rs:662`.
+- **Run ID validation**: `validate_run_id_neutral` accepts both `_run` (19 chars)
+  and `_explore` (24 chars) suffixes. See `crates/app/src/main.rs:805`.
+- **Physical controller interference**: Physical Xbox 360 controllers
+  connected to the system are enumerated by the game as distinct controller
+  slots (Xbox 360 Controller 2, 3, 4). They occupy rows in the PROFILE
+  MANAGEMENT table with no active profile, making profile activation
+  impossible. **Workaround:** disconnect all physical controllers before
+  launching the game. If encountered mid-session, HALT and restart.
+- **Guide button in recomp**: Pressing the Guide button (aliases: `"guide"`,
+  `"xbox"`) opens the recomp rexglue overlay (Performance, Display, Rendering,
+  Upscaling & Sharpening), NOT the Xbox 360 profile sign-in menu. This makes
+  profile activation via the Guide button impossible through uinput.
 
 ## Avoided Modes
 
@@ -526,8 +773,11 @@ wait(0.8);
 - ROSTER MANAGEMENT leaf nodes: TEAM ROSTERS, EDIT LINES, JERSEY NUMBERS, SET DEFAULT ROSTERS, DOWNLOAD ROSTERS
 - SAVE/LOAD/DELETE leaf nodes: SAVE, DELETE (only LOAD explored)
 - SEASON MODE: Sim gameplay (Play/Simulate on calendar) — tested and working
-- SEASON MODE: Trade Players screen layout explored — full trade execution not tested
-- SEASON MODE sub-screens: EDIT PLAYER (Game Menu), EA SPORTS MEDIA HUB — not explored
+- SEASON MODE: ~~Trade Players screen layout explored~~ → **Now explored: full trade execution,
+  acceptance/rejection mechanics, factors, and button mappings documented.**
+- SEASON MODE: ~~sub-screens: EDIT PLAYER (Game Menu), EA SPORTS MEDIA HUB~~ → **Now explored: EDIT PLAYER
+  screen reached (shows Calgary roster list with player portraits), QUIT SEASON MODE flow mapped,
+  SAVE SEASON flow (with QWERTY keyboard) mapped.**
 - BE A GM sub-screens explored: GM Tracker, Trade Players, Free Agents.
   Still unexplored: Trading Block, Scout Assignment, Contracts, Team Rosters,
   Transaction News, Staff Upgrades.

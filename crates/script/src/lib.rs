@@ -159,6 +159,45 @@ pub fn run_script(
         });
     }
 
+    {
+        let obs = Arc::clone(&observer);
+        engine.register_fn(
+            "ocr_analyze_file",
+            move |path: &str| -> Result<rhai::Dynamic, String> {
+                let (result, _selected) = obs
+                    .ocr_analyze_from_path(path)
+                    .map_err(|e| format!("{e:#}"))?;
+                let mut map = rhai::Map::new();
+                map.insert("all_text".into(), rhai::Dynamic::from(result.all_text));
+                map.insert(
+                    "selected_index".into(),
+                    rhai::Dynamic::from_int(result.selected_index.map_or(-1, |i| i as i64)),
+                );
+                let rhai_lines: rhai::Array = result
+                    .lines
+                    .iter()
+                    .map(|l| {
+                        let mut line_map = rhai::Map::new();
+                        line_map.insert("text".into(), rhai::Dynamic::from(l.text.clone()));
+                        let mut rect_map = rhai::Map::new();
+                        rect_map.insert("left".into(), rhai::Dynamic::from_int(l.rect.left as i64));
+                        rect_map.insert("top".into(), rhai::Dynamic::from_int(l.rect.top as i64));
+                        rect_map
+                            .insert("right".into(), rhai::Dynamic::from_int(l.rect.right as i64));
+                        rect_map.insert(
+                            "bottom".into(),
+                            rhai::Dynamic::from_int(l.rect.bottom as i64),
+                        );
+                        line_map.insert("rect".into(), rhai::Dynamic::from_map(rect_map));
+                        rhai::Dynamic::from_map(line_map)
+                    })
+                    .collect();
+                map.insert("lines".into(), rhai::Dynamic::from_array(rhai_lines));
+                Ok(rhai::Dynamic::from_map(map))
+            },
+        );
+    }
+
     engine.register_fn("should_stop", || -> bool {
         INTERRUPTED.load(Ordering::Relaxed)
     });

@@ -165,6 +165,13 @@ enforcement gate is active by default — no extra flags are needed.
 > **No screenshot is ever interpreted without a `menu-vision` response.**
 > If the `menu-vision` call fails or returns no valid JSON: **HALT.**
 > Do not send any inputs. Retry the vision call or report the failure.
+>
+> **Vision timeout policy:**
+> If the `menu-vision` subagent call takes > 90s, treat it as a transient
+> error. Retry once. If the retry also exceeds 90s: **HALT**. Do NOT block
+> silently for minutes — the OCR path may be sufficient for this screen.
+> After a vision timeout, check the OCR sidecar: if OCR has legible text,
+> log with `--analysis-source ocr` instead and proceed.
 
 The vision subagent is a **pure observer**. It receives no task context,
 no expected screen, no goal information. It catalogues what it sees and
@@ -397,6 +404,56 @@ The prompt sent to `menu-vision` is the exact unified vision prompt from §6
 with `Screenshot: _screenshot.png` (the daemon's `--watch` file). **No task
 context, no expected screen, no goal.**
 
+**MANDATORY — analysis source selection:**
+
+The agent MUST choose the analysis source BEFORE logging:
+
+| Source | When | Vision called? | Steps required |
+|--------|------|---------------|----------------|
+| `ocr` | Screen is in `map.md` AND OCR-A1/A2/A3 pass (§3b.0) | **NO** — omit Steps 1–2 below | Log with `--analysis-source ocr` |
+| `vision_fallback` | Screen NOT in `map.md`, OR OCR-A checks failed, OR screen is a first-launch dialog / gameplay / loading screen | **YES** — run Steps 1–3 below | Log with `--analysis-source vision_fallback` |
+
+**NEVER call vision when OCR suffices.** The tool enforces this: if you log
+with `vision_fallback` when OCR text already contains the screen title or
+≥50% of the options, `--log-step` will REJECT the entry and tell you to use
+`ocr` instead.
+
+**NEVER pass both `--prompt-file` and `--analysis-source ocr`.** The tool will
+REJECT this — OCR source means vision was not called, so there is no prompt
+or response to log.
+
+---
+
+**OCR path (no vision — preferred for mapped screens):**
+
+1. Run OCR on the screenshot:
+   ```bash
+   nhl-input --ocr screenshots/$RUN_ID/<NNN>_step_<N>.png
+   ```
+   This writes `screenshots/$RUN_ID/<NNN>_step_<N>.png.ocr.json`.
+
+2. Inspect the JSON output. Run OCR-A1, OCR-A2, OCR-A3 checks (§3b.0).
+
+3. If ALL checks pass: log with `--analysis-source ocr`. Omit `--prompt-file`
+   and `--response-file`:
+   ```bash
+   nhl-input --log-step \
+     --run-id "$RUN_ID" \
+     --step <N> \
+     --screenshot "screenshots/$RUN_ID/<NNN>_step_<N>.png" \
+     --ocr-file "screenshots/$RUN_ID/<NNN>_step_<N>.png.ocr.json" \
+     --analysis-source ocr \
+     --assessment goal_match \
+     --decision navigate \
+     --plan "<one-line summary>"
+   ```
+
+4. If ANY check fails: fall back to vision (see below).
+
+---
+
+**Vision-fallback path (only when OCR fails or screen is unfamiliar):**
+
 **Step 1 — write the exact vision prompt to a file:**
 
 ```bash
@@ -462,8 +519,10 @@ nhl-input --log-step \
   --run-id "$RUN_ID" \
   --step <N> \
   --screenshot "screenshots/$RUN_ID/<NNN>_step_<N>.png" \
+  --ocr-file "screenshots/$RUN_ID/<NNN>_step_<N>.png.ocr.json" \
   --prompt-file /tmp/nhl_prompt.txt \
   --response-file /tmp/nhl_response.txt \
+  --analysis-source vision_fallback \
   --assessment "<goal_match|goal_mismatch|inconsistent|recovery|halt>" \
   --decision "<navigate|recover|halt>" \
   --plan "<one-line summary of what input will be sent next and why>"
@@ -734,17 +793,104 @@ the game may present zero or more first-launch dialogs (Autosave Information,
 Profile Warning, Choose Your Favorite Team, Tutorial prompt). See `map.md`
 "First Launch Hazards" for recognition and dismissal instructions. These
 dialogs can appear in any order or not at all. After each `A`-press to
-dismiss, take a screenshot and verify with vision before sending the next
-input.
+dismiss, take a screenshot and analyze it via the two-tier gate below before
+sending the next input.
+
+**HARD BLOCK — Profile Activation Required:** If the OCR or vision response
+contains the text _"activate a lead NHL Legacy Edition profile"_ or
+_"Profile Management screen to activate"_, this is **NOT** a dismissible
+first-launch dialog. It is a hard environmental blocker:
+
+1. Navigate **once** to PROFILE MANAGEMENT (CUSTOMIZE → ↓×5, A).
+2. Check OCR for `"Xbox 360 Controller"` rows beyond `"User"`.
+3. If physical controllers are detected → **HALT immediately**.
+   Assessment: `halt`. Plan: `"Physical controllers detected in PROFILE
+   MANAGEMENT. Disconnect all physical controllers and relaunch the game."`
+4. If only `"User"` is present → press A or Y on the User row, then try
+   selecting Activate Profile. If activation fails after 2 attempts → **HALT**.
+5. Do NOT dismiss the dialog and attempt to continue — the dialog will
+   reappear on every subsequent save/load attempt. Do NOT waste steps on
+   RECOVERY tiers for this blocker.
+
+### Gate: Analysis liveness (applies to ALL phases)
+
+Every screenshot MUST be analyzed before any input is sent. There are two
+analysis paths, tried in this order:
+
+| Tier | Path | Cost | When to use |
+|------|------|------|-------------|
+| 0 | **OCR fast path** (`--ocr`) | <1s | **DEFAULT.** Use for ALL screens whose title exists in `map.md`. This is your primary analysis method. |
+| 1 | **menu-vision** subagent | 60–120s | ONLY when Tier 0 fails; unfamiliar screens; first-launch dialogs; loading/gameplay screens |
+
+**Tier 0 is the DEFAULT.** You MUST try OCR on every screenshot. Only call
+`menu-vision` when OCR-A checks (§3b.0) actually fail, or when the screen is
+known to be non-textual (splash, loading, gameplay). The tool rejects
+`vision_fallback` log entries when OCR text already contains the answer.
+
+If BOTH Tier 0 AND Tier 1 fail on the same screenshot (OCR fails AND
+menu-vision returns invalid/unparseable) — do NOT send any input. HALT
+immediately. The loop is: INPUT → SCREENSHOT → OCR → (vision ONLY if OCR fails)
+→ validation → log → next decision. **No valid analysis = no further inputs.**
 
 ### Step 3: Execution loop
 
 For **each task** in `goal.json` (in order):
 
+#### 3a.0. Startup Checkpoint Sequence
+
+When the goal is to reach **Main Menu** or **Season Mode Hub** from game
+boot (title screen), execute this deterministic sequence. **No per-step LLM
+reasoning** — the path is fully known from `map.md`. Screenshot at
+checkpoints only.
+
+```
+1. SCREENSHOT checkpoint: verify Title Screen ("NHL LEGACY EDITION" or
+   "Press Start" visible via OCR). If not: wait 5s, retry up to 3x.
+
+2. Press Start, wait 3s. Screenshot.
+   - If Autosave Information visible → A to dismiss.
+   - If Profile Warning visible → ↓ (highlight "Continue Without Saving"), A.
+   - **If Profile Activation Required dialog visible ("activate a lead NHL
+     Legacy Edition profile") → HALT. See PROFILE MANAGEMENT in map.md.
+     Physical controller interference.**
+   - If no dialog, you're advancing past the title → continue.
+
+3. Verify Main Menu reached (OCR: "PLAY", "COMMUNITY", "CUSTOMIZE" visible).
+   If not: press A once, wait 2s, retry.
+
+4. From Main Menu (default focus = COMMUNITY, position 2):
+   - Target PLAY (position 1): ↑, A. Wait 2s, screenshot.
+   - Target CUSTOMIZE (position 3): ↓, A. Wait 2s, screenshot.
+
+5. From PLAY submenu:
+   - Target CAREER (position 5): scroll("dpad_down", 4, 300); wait(0.5); tap("a"); wait(2.5);
+
+6. From CAREER submenu:
+   - Target SEASON MODE (position 3): scroll("dpad_down", 2, 300); wait(0.5); tap("a"); wait(2.5);
+
+7. From SEASON MODE entry (NEW / LOAD):
+   - Target LOAD: tap("dpad_down"); wait(0.5); tap("a"); wait(3.0);
+
+8. From LOAD file list:
+   - Screenshot (checkpoint). Select save file with dpad_down + A.
+
+Total commands: ~10 button presses. Expected execution: ~30s input time.
+With 4 screenshot checkpoints: ~2 minutes total (down from ~9 minutes).
+```
+
+Use `scroll()` for batched dpad presses (the entire scroll runs
+atomically inside the daemon). The `map.md` Navigation Reference table
+documents exact scroll counts.
+
+After reaching the final checkpoint (Season Mode Hub or Main Menu), begin
+the standard PRE-CHECK gate below.
+
 #### 3a. PRE-CHECK
 
-Take a screenshot, run the unified vision prompt via `menu-vision`, and log
-the result via `nhl-input --log-step`.
+Take a screenshot. If the expected screen is in `map.md`, try the OCR fast
+path first (§3b.0). If OCR fails or the screen is unfamiliar, run the
+unified vision prompt via `menu-vision`. Log the result via
+`nhl-input --log-step`.
 
 Then perform two passes:
 
@@ -822,15 +968,73 @@ hallucination:
 **CAUTION — daemon input discipline:** Multi-input scripts (e.g.
 `scroll("dpad_down", 6, 300)`) are allowed and encouraged for well-mapped
 sequences. Every script MUST end with `screenshot()` and the resulting
-image MUST be analyzed by `menu-vision` before ANY further inputs are sent.
-Never chain two scripts without vision+log between them.
+image MUST be analyzed before ANY further inputs are sent.
+Never chain two scripts without analysis+log between them.
 
-**GATE — vision liveness check:** The `menu-vision` subagent (`subagent_type="menu-vision"`) is
-the ONLY way to interpret a screenshot. The parent agent cannot view images.
-If a `menu-vision` call fails, returns empty, or returns non-JSON: **HALT
-immediately.** Do not press any buttons. The loop is: INPUT → SCREENSHOT →
-menu-vision → (parse JSON) → consistency checks → goal-match → log-step →
-next decision. **No menu-vision response = no further inputs.**
+**(See the shared Analysis Liveness gate above — Tier 0 OCR first, Tier 1 menu-vision fallback.)**
+
+#### 3b.0. OCR Fast Path (Tier 0)
+
+When the current screen's expected title (from `goal.json` or the last
+known state) appears in `map.md`, try OCR first:
+
+```bash
+./target/debug/nhl-input --ocr screenshots/$RUN_ID/NNN_step_NNN.png
+```
+
+This returns JSON with:
+- `lines`: array of `{text, rect: {left, top, right, bottom}}` — every text line with its bounding box
+- `all_text`: all recognized text, newline-separated
+- `selected_index`: index into `lines` of the likely selected option (via luminance analysis), or `null`
+- `selected_text`: the text of the selected line, or `null`
+
+**OCR consistency checks (OCR-A):**
+
+| # | Check | If fails |
+|---|-------|----------|
+| OCR-A1 | At least one `lines[].text` matches the expected `screen_title` from `map.md` (case-insensitive substring) | Cannot identify screen. Fall back to Tier 1 (menu-vision). |
+| OCR-A2 | ≥70% of the expected options for this screen (from `map.md` Navigation Reference or `goal.json`) are found in `all_text` (case-insensitive) | OCR may have garbled text. Fall back to Tier 1. |
+| OCR-A3 | `selected_index` is non-null and `lines[selected_index].text` matches at least one expected option | Cannot determine cursor position. Fall back to Tier 1, but you may still use the `all_text` to identify the screen. |
+| OCR-A4 | `all_text` does NOT contain BOTH hub-level items ("GM OPTIONS", "CUSTOMIZE", "QUIT SEASON MODE") AND flyout sub-options ("EDIT PLAYER", "SETTINGS", "SAVE SEASON") simultaneously | A flyout is OPEN. The OCR result is valid but any d-pad input will be intercepted by the flyout submenu instead of navigating the hub. Plan = "B (close flyout)", press B, re-screenshot, re-run OCR. Do NOT navigate until the flyout options disappear from `all_text`. |
+
+**Interpreting OCR results for navigation:**
+
+If all OCR-A checks pass:
+1. The identified screen is the one whose title matched in OCR-A1.
+2. The selected option is `lines[selected_index].text`.
+3. Look up this screen in `map.md` Navigation Reference to determine the next button press(es) to reach the destination.
+4. **Deterministic path check:** If the button sequence from the current
+   screen to the destination is fully specified in `map.md` Navigation
+   Reference (exact button names, exact scroll counts), emit the plan
+   directly from the table — skip LLM plan generation. Plan format:
+   `"map.md: {button_sequence}"` (e.g., `"map.md: ↓×2, A"`).
+   This signals zero LLM reasoning was used for this step and saves 25-40s.
+5. **If the path is NOT in the table:** compute the distance from the
+   current selection to the target option from `map.md` or `goal.json` and
+   generate a `scroll()` + `tap()` command. This is a single deterministic
+   calculation (how many dpad presses to the target?) — no LLM reasoning
+   needed.
+6. Proceed to step 4 (INPUT) — skip steps 2–3 (CHECK/PLAN via vision).
+5. Log the OCR result via `nhl-input --log-step`. If the plan came from
+   the deterministic path check (step 4 above), use the `"map.md:"` prefix:
+   ```bash
+   ./target/debug/nhl-input --run-id "$RUN_ID" --step N --screenshot ... \
+     --assessment goal_match --decision navigate \
+     --plan "map.md: dpad_down, A"  # or "map.md: ↓×6, A" etc.
+   ```
+   If the plan was computed (step 5 — distance calculation), use a short
+   descriptive plan like `"scroll 2 down then A"`.
+6. The `ocr_source: true` field in the log entry marks this step as OCR-powered for retrospective analysis.
+
+**OCR failure → Tier 1 fallback:**
+
+If ANY of OCR-A1, OCR-A2, or OCR-A3 fail:
+1. Do NOT send any input. Do NOT press B. The game state is correct — perception failed.
+2. Run `menu-vision` on the SAME screenshot (streamlined prompt for mapped screens, exhaustive for unfamiliar).
+3. Run Pass A + Pass B on the vision response.
+4. If vision succeeds: log normally, proceed with navigation. Resume OCR for the next step.
+5. If vision also fails (Pass A produces `low` confidence, or Pass B mismatch):
+   Enter RECOVERY protocol (§3d). At this point it IS a navigation problem.
 
 For navigation within the task, follow this tight loop:
 
@@ -839,13 +1043,19 @@ For navigation within the task, follow this tight loop:
    `post_screen`, and `post_options`. Re-open `map.md` Navigation Reference.
    You are anchoring to known coordinates — do not guess from memory.
 
-2. **CHECK**: Run the vision prompt via `menu-vision` with NO task
-    context (the same prompt for every vision call). Use the **streamlined**
-    prompt variant from §6 for routine navigation between known screens,
-    and the **exhaustive** variant for first-launch dialogs, EXPLORE mode,
-    or any unfamiliar screen. You MUST receive a valid JSON object. If the
-    subagent call fails, returns empty, or returns non-JSON: **HALT.** Do
-    not send any inputs. Retry the vision call.
+2. **CHECK**: Determine which analysis path to use:
+
+   **If the expected screen is in `map.md`**: Run the OCR fast path (§3b.0).
+   If OCR passes (OCR-A1 + OCR-A2 + OCR-A3 all pass): skip to step 4
+   (INPUT). You have identified the screen and selected option — look
+   up the next button press in `map.md` and execute it.
+
+   **If OCR fails any check OR the screen is NOT in `map.md`**: Run the
+   vision prompt via `menu-vision` with NO task context. Use the
+   **streamlined** prompt variant for mapped screens, **exhaustive** for
+   unfamiliar screens or first-launch dialogs. You MUST receive a valid
+   JSON object. If the subagent call fails, returns empty, or returns
+   non-JSON: **HALT.** Do not send any inputs. Retry the vision call.
 
    Run **Pass A** consistency checks (C1–C7 from §3a) on the vision response.
    If Pass A fails: treat as INTERRUPT (step 6). Do NOT attempt goal-matching
@@ -889,14 +1099,33 @@ For navigation within the task, follow this tight loop:
    between releases. Valid directions: `"dpad_up"` / `"up"`, `"dpad_down"` /
    `"down"`, `"dpad_left"` / `"left"`, `"dpad_right"` / `"right"`.
 
-5. **VERIFY**: Run the vision prompt via `menu-vision` on the new
-    screenshot. Same halt rule as CHECK — you MUST receive a parseable JSON
-    response before sending any further inputs. Use the streamlined prompt
-    for routine navigation, exhaustive for unfamiliar screens.
+   **IMPORTANT — team cycling on TRADE PLAYERS screen:**
+   The right-column team list cycles in alphabetical order by city:
+   ANA → BOS → BUF → CGY → CAR → CHI → COL → CBJ → DAL → DET → EDM →
+   FLA → LAK → MIN → MTL → NSH → NJD → NYI → NYR → OTT → PHI → PIT →
+   SJS → STL → TBL → TOR → VAN → WSH → WPG → (wraps back to ANA).
+   LT cycles backward. RB/LB switch leagues.
 
-   Run **Pass A** consistency checks. If they pass, compare against the
-   expected intermediate screen from your plan. If the screen doesn't match
-   what the planned step should produce, treat as INTERRUPT (step 6).
+   **Batch team cycling efficiently:** Instead of verifying after every
+   trigger press, compute the offset between the current team and the
+   target and batch ALL presses in a single `--send` command:
+   ```bash
+   # From ANA to TOR: ~25 RT presses forward
+   ./target/debug/nhl-input --send 'tap_trigger("rt", 500); wait(0.7); tap_trigger("rt", 500); wait(0.7); ... ; screenshot("step_N");'
+   ```
+   After the batch, run OCR and verify the correct team appears. If the
+   game dropped a press, re-adjust with the remaining offset (never more
+   than a few presses). **Do NOT screenshot after every single RT press.**
+
+5. **VERIFY**: Analyze the new screenshot. Same rules as CHECK:
+   try OCR first for mapped screens, fall back to `menu-vision` if OCR
+   fails. Same halt rule — you MUST receive parseable output before sending
+   any further inputs.
+
+   If using vision: run **Pass A** consistency checks. If they pass, compare
+   against the expected intermediate screen from your plan. If the screen
+   doesn't match what the planned step should produce, treat as INTERRUPT
+   (step 6).
 
    Log the result via `nhl-input --log-step`.
 
@@ -945,6 +1174,21 @@ Update `goal.json` on disk after every status change.
 **YOU ARE NOT ALLOWED TO ABORT A TASK without exhausting all four tiers.**
 Each tier must be attempted with screenshot verification before escalating.
 
+**Tier 0 — Check for unresolvable environmental blockers (check before any B-press):**
+
+Before entering Tier 1, check if the current screen is an unresolvable
+blocker that cannot be fixed through navigation:
+
+| Blocker | OCR trigger | Action |
+|---------|-------------|--------|
+| Profile Activation Required | `"activate a lead NHL Legacy Edition profile"` or `"Profile Management screen to activate"` | Navigate ONCE to PROFILE MANAGEMENT, check for `"Xbox 360 Controller"` rows. If found → **HALT** (physical controllers). If only `"User"` and activation fails after 2 attempts → **HALT**. |
+| PROFILE MANAGEMENT (same screen for 10+ consecutive steps) | `screen_title` = "PROFILE MANAGEMENT" in 10+ log entries | **HALT** — stuck in profile management loop. Physical controller interference suspected. |
+| Same blocking dialog 3+ times in a run | Same dialog text appears 3+ times | **HALT** — dialog reappears despite dismissal. Cannot be resolved through navigation. |
+
+If an unresolvable blocker is detected: set assessment = `halt`, decision =
+`halt`, and escalate to Tier 4 diagnostic dump. Do NOT attempt Tiers 1–3 for
+environmental blockers — they waste steps and will not resolve the issue.
+
 **Tier 1 — One-step back**: Press `B`, wait 1.5s, screenshot. Run the vision
 prompt via `menu-vision` (use **exhaustive** — you are lost, don't assume
 you know the screen). Run Pass A checks. Is this a screen you
@@ -955,6 +1199,22 @@ recognize from `map.md`? If yes, re-plan from here. If not, go to Tier 2.
 Main Menu, CUSTOMIZE menu, or Roster Management submenu. Verify with the
 vision prompt and cross-check with `map.md`. If you complete 10 presses
 without reaching an anchor, go to Tier 3.
+
+**Flyout trap recovery (special case):** If you find yourself on EDIT PLAYER
+or any other CUSTOMIZE flyout sub-screen (e.g., SETTINGS, SAVE SEASON) when
+you expected to be at a Season Mode hub screen:
+1. The CUSTOMIZE flyout intercepted your navigation. Press `B` once to
+   close the sub-screen.
+2. Press `B` again to close the CUSTOMIZE flyout itself (may require a
+   second B press — the first closes the sub-screen, the second retracts
+   the flyout).
+3. Screenshot. Verify the flyout is fully closed: the OCR `all_text` must
+   NOT contain "EDIT PLAYER", "SETTINGS", or "SAVE SEASON" alongside hub
+   items like "GM OPTIONS" or "QUIT SEASON MODE".
+4. If flyout sub-options are still visible, press `B` again and re-screenshot.
+5. Once the hub is clean, re-navigate to your target using the documented
+   path from `map.md` Navigation Reference. Before any d-pad input, verify
+   flyout state per OCR-A4.
 
 **Tier 3 — Full reset from Main Menu**: Press `Start` → navigate to "Quit"
 → "Main Menu" with the d-pad and `A`. Wait 5s for transition. Screenshot
@@ -998,6 +1258,21 @@ The vision subagent returns a pure description every time — there is no
 3. If the response seems contradictory (e.g. `screen_title` says one thing
    but `all_text` or `options` tells a different story), flag as
    `inconsistent` and trigger INTERRUPT, regardless of `confidence` level.
+
+### Hard blocker detection (check BEFORE every input)
+
+Before sending any input, scan the OCR/vision response for these
+high-signal strings that indicate an unresolvable environmental blocker:
+
+| Signal | Meaning | Action |
+|--------|---------|--------|
+| `"activate a lead NHL Legacy Edition profile"` | Profile Activation Required dialog | HALT — see PROFILE MANAGEMENT in map.md |
+| `"Profile Management screen to activate"` | Profile Activation Required dialog | HALT — physical controller interference |
+| `"Xbox 360 Controller"` + `"PROFILE MANAGEMENT"` | Physical controllers detected in PROFILE MANAGEMENT | HALT — disconnect physical controllers and relaunch |
+
+If any of these are detected plus `assessment = halt` and `decision = halt`
+are set in the step log, skip all RECOVERY tiers and escalate directly to
+Tier 4 diagnostic dump.
 
 ### Run log and diagnostics
 

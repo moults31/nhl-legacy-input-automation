@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -40,6 +40,13 @@ struct Cli {
                 When used with --log-step, this is the path to an existing screenshot file."
     )]
     screenshot: Option<String>,
+
+    #[arg(
+        long,
+        conflicts_with_all = ["script", "eval", "list_windows", "daemon", "send", "log_step"],
+        help = "Run OCR on a saved screenshot file and output JSON to stdout"
+    )]
+    ocr: Option<String>,
 
     #[arg(long, help = "List all visible window titles and exit")]
     list_windows: bool,
@@ -130,6 +137,20 @@ struct Cli {
 
     #[arg(
         long,
+        requires = "log_step",
+        help = "Path to the .ocr.json sidecar written by --ocr. Required for provenance tracking."
+    )]
+    ocr_file: Option<String>,
+
+    #[arg(
+        long,
+        requires = "log_step",
+        help = "Analysis source: ocr (OCR was sufficient) or vision_fallback (OCR was attempted, vision model used)"
+    )]
+    analysis_source: Option<String>,
+
+    #[arg(
+        long,
         help = "With --daemon: write command and screenshot events to daemon_events.jsonl"
     )]
     log_json: bool,
@@ -189,6 +210,10 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if let Some(ref ocr_path) = cli.ocr {
+        return run_ocr(ocr_path);
+    }
+
     if let Some(ref watch_path) = cli.watch {
         let p = PathBuf::from(watch_path);
         if let Some(parent) = p.parent() {
@@ -239,14 +264,6 @@ fn run_log_step(cli: &Cli) -> Result<()> {
         .screenshot
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("--screenshot (path) is required"))?;
-    let prompt_file = cli
-        .prompt_file
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("--prompt-file is required"))?;
-    let response_file = cli
-        .response_file
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("--response-file is required"))?;
     let assessment = cli
         .assessment
         .as_ref()
@@ -259,6 +276,19 @@ fn run_log_step(cli: &Cli) -> Result<()> {
         .plan
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("--plan is required"))?;
+    let ocr_file = cli
+        .ocr_file
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("--ocr-file is required"))?;
+    let analysis_source = cli
+        .analysis_source
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("--analysis-source is required"))?;
+
+    let valid_sources = ["ocr", "vision_fallback"];
+    if !valid_sources.contains(&analysis_source.as_str()) {
+        anyhow::bail!("--analysis-source must be one of: {:?}", valid_sources);
+    }
 
     let valid_assessments = [
         "goal_match",
@@ -281,209 +311,399 @@ fn run_log_step(cli: &Cli) -> Result<()> {
         anyhow::bail!("screenshot file does not exist: {}", screenshot);
     }
 
-    let prompt_text = fs::read_to_string(prompt_file)
-        .with_context(|| format!("failed to read prompt file: {prompt_file}"))?;
-
-    let banned_prompt_patterns: &[&str] = &[
-        "Look at this screenshot file",
-        "You are navigating the menu system",
-        "I am executing a task in",
-        "EXPECTS this screenshot to show",
-        "MATCH question",
-        "actual_screen_title",
-        r#"{"match":"#,
-        r#""match": true|false"#,
-    ];
-    for pattern in banned_prompt_patterns {
-        if prompt_text.contains(pattern) {
-            anyhow::bail!(
-                "vision prompt contains banned pattern: {:?}\n\
-                 The vision prompt must be the pure unified prompt from the skill — \
-                 no task context, no expected screen, no match question. \
-                 See SKILL.md §6 for the canonical template.",
-                pattern
-            );
-        }
-    }
-
-    // Validate the Screenshot: header line in the prompt. It must contain only
-    // a bare filename (NNN_step_N.png), not a directory path. Including the
-    // run_id directory in the path leaks task context to the vision model and
-    // causes hallucination.
-    for line in prompt_text.lines() {
-        if let Some(filename) = line.strip_prefix("Screenshot: ") {
-            let filename = filename.trim();
-            if filename.is_empty() {
-                anyhow::bail!(
-                    "vision prompt 'Screenshot:' header must specify a filename \
-                     (e.g. 'Screenshot: 001_step_001.png'), got: {:?}",
-                    line
-                );
-            }
-            if filename.contains('/') {
-                anyhow::bail!(
-                    "vision prompt 'Screenshot:' header must contain ONLY a bare \
-                     filename (e.g. 'Screenshot: 001_step_001.png'), not a full \
-                     path. Including a directory path leaks run_id context to the \
-                     vision model. Got: {:?}",
-                    filename
-                );
-            }
-            break;
-        }
-    }
-
     // Validate RUN_ID neutrality. Descriptive suffixes like _trade_mtl_tor
     // leak task context into directory names, which the vision model can
     // discover through the screenshot path in daemon_events.jsonl diagnostics.
     validate_run_id_neutral(run_id)?;
 
-    let response_text = fs::read_to_string(response_file)
-        .with_context(|| format!("failed to read response file: {response_file}"))?;
+    let is_vision = analysis_source == "vision_fallback";
 
-    let response_value: Value =
-        serde_json::from_str(&response_text).with_context(|| "response file is not valid JSON")?;
+    let (prompt_text, response_value) = if is_vision {
+        let prompt_file = cli.prompt_file.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("--prompt-file is required when --analysis-source is vision_fallback")
+        })?;
+        let prompt_text = fs::read_to_string(prompt_file)
+            .with_context(|| format!("failed to read prompt file: {prompt_file}"))?;
 
-    let required_fields: &[&str] = &[
-        "all_text",
-        "screen_title",
-        "layout",
-        "layout_description",
-        "options",
-        "selected",
-        "button_hints",
-        "gameplay",
-        "confidence",
-    ];
-    for field in required_fields {
-        if response_value.get(field).is_none() {
-            anyhow::bail!("vision response missing required field: {}", field);
+        let banned_prompt_patterns: &[&str] = &[
+            "Look at this screenshot file",
+            "You are navigating the menu system",
+            "I am executing a task in",
+            "EXPECTS this screenshot to show",
+            "MATCH question",
+            "actual_screen_title",
+            r#"{"match":"#,
+            r#""match": true|false"#,
+        ];
+        for pattern in banned_prompt_patterns {
+            if prompt_text.contains(pattern) {
+                anyhow::bail!(
+                    "vision prompt contains banned pattern: {:?}\n\
+                     The vision prompt must be the pure unified prompt from the skill — \
+                     no task context, no expected screen, no match question. \
+                     See SKILL.md §6 for the canonical template.",
+                    pattern
+                );
+            }
         }
-    }
 
-    // --- type validation ---
-
-    if !response_value["all_text"].is_array() {
-        anyhow::bail!("all_text must be an array");
-    }
-    for (i, v) in response_value["all_text"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .enumerate()
-    {
-        if !v.is_string() {
-            anyhow::bail!("all_text[{}] must be a string", i);
+        // Validate the Screenshot: header line in the prompt. It must contain only
+        // a bare filename (NNN_step_N.png), not a directory path. Including the
+        // run_id directory in the path leaks task context to the vision model and
+        // causes hallucination.
+        for line in prompt_text.lines() {
+            if let Some(filename) = line.strip_prefix("Screenshot: ") {
+                let filename = filename.trim();
+                if filename.is_empty() {
+                    anyhow::bail!(
+                        "vision prompt 'Screenshot:' header must specify a filename \
+                         (e.g. 'Screenshot: 001_step_001.png'), got: {:?}",
+                        line
+                    );
+                }
+                if filename.contains('/') {
+                    anyhow::bail!(
+                        "vision prompt 'Screenshot:' header must contain ONLY a bare \
+                         filename (e.g. 'Screenshot: 001_step_001.png'), not a full \
+                         path. Including a directory path leaks run_id context to the \
+                         vision model. Got: {:?}",
+                        filename
+                    );
+                }
+                break;
+            }
         }
-    }
 
-    if !response_value["screen_title"].is_string() {
-        anyhow::bail!("screen_title must be a string");
-    }
+        let response_file = cli.response_file.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("--response-file is required when --analysis-source is vision_fallback")
+        })?;
+        let response_text = fs::read_to_string(response_file)
+            .with_context(|| format!("failed to read response file: {response_file}"))?;
 
-    if !response_value["layout_description"].is_string() {
-        anyhow::bail!("layout_description must be a string");
-    }
+        let response_value: Value = serde_json::from_str(&response_text)
+            .with_context(|| "response file is not valid JSON")?;
 
-    let valid_layouts = ["list", "two_column", "tabs", "grid", "custom"];
-    let layout = response_value["layout"].as_str().unwrap_or("");
-    if !valid_layouts.contains(&layout) {
-        anyhow::bail!("layout must be one of {:?}, got: {}", valid_layouts, layout);
-    }
-
-    if !response_value["options"].is_array() {
-        anyhow::bail!("options must be an array");
-    }
-    for (i, v) in response_value["options"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .enumerate()
-    {
-        if !v.is_string() {
-            anyhow::bail!("options[{}] must be a string", i);
+        let required_fields: &[&str] = &[
+            "all_text",
+            "screen_title",
+            "layout",
+            "layout_description",
+            "options",
+            "selected",
+            "button_hints",
+            "gameplay",
+            "confidence",
+        ];
+        for field in required_fields {
+            if response_value.get(field).is_none() {
+                anyhow::bail!("vision response missing required field: {}", field);
+            }
         }
-    }
 
-    if !response_value["selected"].is_string() {
-        anyhow::bail!("selected must be a string");
-    }
+        // --- type validation ---
 
-    if !response_value["button_hints"].is_array() {
-        anyhow::bail!("button_hints must be an array");
-    }
-    for (i, v) in response_value["button_hints"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .enumerate()
-    {
-        if !v.is_string() {
-            anyhow::bail!("button_hints[{}] must be a string", i);
+        if !response_value["all_text"].is_array() {
+            anyhow::bail!("all_text must be an array");
         }
-    }
+        for (i, v) in response_value["all_text"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+        {
+            if !v.is_string() {
+                anyhow::bail!("all_text[{}] must be a string", i);
+            }
+        }
 
-    if !response_value["gameplay"].is_boolean() {
-        anyhow::bail!("gameplay must be a boolean");
-    }
+        if !response_value["screen_title"].is_string() {
+            anyhow::bail!("screen_title must be a string");
+        }
 
-    let valid_confidences = ["high", "medium", "low"];
-    let confidence = response_value["confidence"].as_str().unwrap_or("");
-    if !valid_confidences.contains(&confidence) {
+        if !response_value["layout_description"].is_string() {
+            anyhow::bail!("layout_description must be a string");
+        }
+
+        let valid_layouts = ["list", "two_column", "tabs", "grid", "custom"];
+        let layout = response_value["layout"].as_str().unwrap_or("");
+        if !valid_layouts.contains(&layout) {
+            anyhow::bail!("layout must be one of {:?}, got: {}", valid_layouts, layout);
+        }
+
+        if !response_value["options"].is_array() {
+            anyhow::bail!("options must be an array");
+        }
+        for (i, v) in response_value["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+        {
+            if !v.is_string() {
+                anyhow::bail!("options[{}] must be a string", i);
+            }
+        }
+
+        if !response_value["selected"].is_string() {
+            anyhow::bail!("selected must be a string");
+        }
+
+        if !response_value["button_hints"].is_array() {
+            anyhow::bail!("button_hints must be an array");
+        }
+        for (i, v) in response_value["button_hints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+        {
+            if !v.is_string() {
+                anyhow::bail!("button_hints[{}] must be a string", i);
+            }
+        }
+
+        if !response_value["gameplay"].is_boolean() {
+            anyhow::bail!("gameplay must be a boolean");
+        }
+
+        let valid_confidences = ["high", "medium", "low"];
+        let confidence = response_value["confidence"].as_str().unwrap_or("");
+        if !valid_confidences.contains(&confidence) {
+            anyhow::bail!(
+                "confidence must be one of {:?}, got: {}",
+                valid_confidences,
+                confidence
+            );
+        }
+
+        // Optional breadcrumbs: if present, must be a string
+        if let Some(b) = response_value.get("breadcrumbs") {
+            if !b.is_string() {
+                anyhow::bail!("breadcrumbs must be a string if present");
+            }
+        }
+
+        // Optional regions: if present, must be an array of objects with string fields
+        if let Some(regions) = response_value.get("regions") {
+            if !regions.is_array() {
+                anyhow::bail!("regions must be an array if present");
+            }
+            for (i, region) in regions.as_array().unwrap().iter().enumerate() {
+                if !region.is_object() {
+                    anyhow::bail!("regions[{}] must be an object", i);
+                }
+                for field in &["name", "options", "selected"] {
+                    if region.get(field).is_none() {
+                        anyhow::bail!("regions[{}] missing required field: {}", i, field);
+                    }
+                }
+                if !region["name"].is_string() {
+                    anyhow::bail!("regions[{}].name must be a string", i);
+                }
+                if !region["options"].is_array() {
+                    anyhow::bail!("regions[{}].options must be an array", i);
+                }
+                if !region["selected"].is_string() {
+                    anyhow::bail!("regions[{}].selected must be a string", i);
+                }
+                for (j, opt) in region["options"].as_array().unwrap().iter().enumerate() {
+                    if !opt.is_string() {
+                        anyhow::bail!("regions[{}].options[{}] must be a string", i, j);
+                    }
+                }
+            }
+        }
+
+        (Some(prompt_text), Some(response_value))
+    } else {
+        (None, None)
+    };
+
+    // --- OCR provenance validation ---
+
+    let ocr_sidecar_text = fs::read_to_string(ocr_file)
+        .with_context(|| format!("failed to read OCR file: {}", ocr_file))?;
+    let ocr_sidecar: Value = serde_json::from_str(&ocr_sidecar_text)
+        .with_context(|| format!("OCR file is not valid JSON: {}", ocr_file))?;
+
+    let provenance = ocr_sidecar
+        .get("provenance")
+        .ok_or_else(|| anyhow::anyhow!("OCR file missing 'provenance' field"))?;
+    let sidecar_path = provenance
+        .get("screenshot_path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("OCR provenance missing 'screenshot_path'"))?;
+    let sidecar_size = provenance
+        .get("screenshot_size")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| anyhow::anyhow!("OCR provenance missing 'screenshot_size'"))?;
+    let sidecar_modified = provenance
+        .get("screenshot_modified")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("OCR provenance missing 'screenshot_modified'"))?;
+
+    if sidecar_path != screenshot {
         anyhow::bail!(
-            "confidence must be one of {:?}, got: {}",
-            valid_confidences,
-            confidence
+            "OCR provenance screenshot_path mismatch: sidecar says {:?}, --screenshot is {:?}",
+            sidecar_path,
+            screenshot
         );
     }
 
-    // Optional breadcrumbs: if present, must be a string
-    if let Some(b) = response_value.get("breadcrumbs") {
-        if !b.is_string() {
-            anyhow::bail!("breadcrumbs must be a string if present");
-        }
+    let actual_metadata = fs::metadata(screenshot)
+        .with_context(|| format!("failed to read screenshot metadata: {}", screenshot))?;
+    let actual_size = actual_metadata.len();
+
+    if sidecar_size != actual_size {
+        anyhow::bail!(
+            "OCR provenance size mismatch: sidecar says {}, actual is {}",
+            sidecar_size,
+            actual_size
+        );
     }
 
-    // Optional regions: if present, must be an array of objects with string fields
-    if let Some(regions) = response_value.get("regions") {
-        if !regions.is_array() {
-            anyhow::bail!("regions must be an array if present");
-        }
-        for (i, region) in regions.as_array().unwrap().iter().enumerate() {
-            if !region.is_object() {
-                anyhow::bail!("regions[{}] must be an object", i);
-            }
-            for field in &["name", "options", "selected"] {
-                if region.get(field).is_none() {
-                    anyhow::bail!("regions[{}] missing required field: {}", i, field);
-                }
-            }
-            if !region["name"].is_string() {
-                anyhow::bail!("regions[{}].name must be a string", i);
-            }
-            if !region["options"].is_array() {
-                anyhow::bail!("regions[{}].options must be an array", i);
-            }
-            if !region["selected"].is_string() {
-                anyhow::bail!("regions[{}].selected must be a string", i);
-            }
-            for (j, opt) in region["options"].as_array().unwrap().iter().enumerate() {
-                if !opt.is_string() {
-                    anyhow::bail!("regions[{}].options[{}] must be a string", i, j);
-                }
-            }
-        }
+    let actual_modified = actual_metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .and_then(|d| chrono::DateTime::from_timestamp(d.as_secs() as i64, 0))
+        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+        .unwrap_or_else(|| "unknown".to_string());
+
+    if sidecar_modified != actual_modified {
+        anyhow::bail!(
+            "OCR provenance modified timestamp mismatch: sidecar says {:?}, actual is {:?}",
+            sidecar_modified,
+            actual_modified
+        );
     }
 
-    let log_entry = serde_json::json!({
+    match analysis_source.as_str() {
+        "ocr" => {
+            let succeeded = ocr_sidecar
+                .get("succeeded")
+                .and_then(|v| v.as_bool())
+                .ok_or_else(|| anyhow::anyhow!("OCR file missing 'succeeded' field"))?;
+            if !succeeded {
+                anyhow::bail!("--analysis-source ocr requires OCR sidecar with succeeded=true");
+            }
+            if let Some(result) = ocr_sidecar.get("result") {
+                let all_text = result
+                    .get("all_text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let line_count = result
+                    .get("lines")
+                    .and_then(|v| v.as_array().map(|a| a.len()))
+                    .unwrap_or(0);
+                if all_text.trim().is_empty() && line_count == 0 {
+                    anyhow::bail!(
+                        "--analysis-source ocr requires OCR to have produced text. \
+                                   OCR succeeded but returned zero text lines."
+                    );
+                }
+            }
+            if prompt_text.is_some() {
+                anyhow::bail!(
+                    "--analysis-source ocr must not provide --prompt-file or --response-file. \
+                     OCR source means vision was not called."
+                );
+            }
+        }
+        "vision_fallback" => {
+            let rv = response_value.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("internal error: response_value missing for vision_fallback")
+            })?;
+
+            let has_ocr_source = rv
+                .get("ocr_source")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if has_ocr_source {
+                anyhow::bail!(
+                    "--analysis-source vision_fallback requires vision_response to NOT have ocr_source"
+                );
+            }
+
+            let succeeded = ocr_sidecar
+                .get("succeeded")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if succeeded {
+                if let Some(ocr_result) = ocr_sidecar.get("result") {
+                    let ocr_raw = ocr_result
+                        .get("all_text")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let ocr_all_text = normalize_for_match(ocr_raw);
+
+                    let vision_title = match_normalize(rv["screen_title"].as_str().unwrap_or(""));
+
+                    let vision_options: Vec<String> = rv["options"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str().map(match_normalize))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
+                    let title_match =
+                        !vision_title.is_empty() && ocr_all_text.contains(&vision_title);
+
+                    let options_found = vision_options
+                        .iter()
+                        .filter(|opt| !opt.is_empty() && ocr_all_text.contains(opt.as_str()))
+                        .count();
+                    let overlap = if vision_options.is_empty() {
+                        0.0f64
+                    } else {
+                        options_found as f64 / vision_options.len() as f64
+                    };
+
+                    // Either the screen title OR >=50% of options must be in OCR text.
+                    // Previously required both (AND), which missed splash screens
+                    // and single-button dialogs where options is empty (overlap=0.0).
+                    if title_match || overlap >= 0.5 {
+                        anyhow::bail!(
+                            "OCR was sufficient for this screen. \
+                             Use --analysis-source ocr instead of vision_fallback.\n\
+                             OCR-A1: screen title \"{}\" found in OCR all_text: {}\n\
+                             OCR-A2: {}/{} options ({}%) found in OCR all_text",
+                            vision_title,
+                            title_match,
+                            options_found,
+                            vision_options.len(),
+                            (overlap * 100.0) as u32,
+                        );
+                    }
+                }
+            }
+        }
+        _ => unreachable!(),
+    }
+
+    let ocr_provenance = serde_json::json!({
+        "screenshot_size": actual_size,
+        "screenshot_modified": actual_modified,
+    });
+
+    let mut log_entry = serde_json::json!({
         "step": step,
         "screenshot": screenshot,
-        "vision_prompt": prompt_text,
-        "vision_response": response_value,
         "assessment": assessment,
         "decision": decision,
         "plan": plan,
+        "analysis_source": analysis_source,
+        "ocr_provenance": ocr_provenance,
     });
+
+    if is_vision {
+        log_entry["vision_prompt"] =
+            serde_json::json!(prompt_text.expect("prompt_text must be set for vision"));
+        log_entry["vision_response"] =
+            serde_json::json!(response_value.expect("response_value must be set for vision"));
+    }
 
     let run_dir = PathBuf::from("screenshots").join(run_id);
     fs::create_dir_all(&run_dir)?;
@@ -497,7 +717,11 @@ fn run_log_step(cli: &Cli) -> Result<()> {
     serde_json::to_writer(&mut file, &log_entry)?;
     file.write_all(b"\n")?;
 
-    eprintln!("log-step: step {} logged to {}", step, log_path.display());
+    eprintln!(
+        "log-step: step {step} [{source}] logged to {}",
+        log_path.display(),
+        source = analysis_source,
+    );
     Ok(())
 }
 
@@ -659,8 +883,19 @@ fn run_daemon(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+fn normalize_for_match(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+        .collect::<String>()
+        .to_lowercase()
+}
+
+fn match_normalize(s: &str) -> String {
+    normalize_for_match(s)
+}
+
 fn validate_run_id_neutral(run_id: &str) -> Result<()> {
-    let valid = run_id.len() == 19
+    let valid = (run_id.len() == 19 || run_id.len() == 23)
         && run_id[..8].chars().all(|c| c.is_ascii_digit())
         && &run_id[8..9] == "_"
         && run_id[9..15].chars().all(|c| c.is_ascii_digit())
@@ -711,4 +946,78 @@ fn json_escape(s: &str) -> String {
         }
     }
     out
+}
+
+fn run_ocr(path: &str) -> Result<()> {
+    let path_buf = PathBuf::from(path);
+    if !path_buf.exists() {
+        anyhow::bail!("screenshot file does not exist: {}", path);
+    }
+
+    let observer = ScreenCaptureObserver::new("");
+
+    let start = std::time::Instant::now();
+    let ocr_result = observer.ocr_analyze_from_path(path);
+    let elapsed_ms = start.elapsed().as_millis();
+
+    match ocr_result {
+        Ok((result, _selected)) => {
+            let selected_text = _selected
+                .and_then(|idx| result.lines.get(idx))
+                .map(|line| line.text.as_str());
+
+            let output = serde_json::json!({
+                "lines": result.lines,
+                "all_text": result.all_text,
+                "selected_index": result.selected_index,
+                "selected_text": selected_text,
+            });
+
+            eprintln!("ocr: {} text lines in {}ms", result.lines.len(), elapsed_ms);
+            println!("{}", serde_json::to_string_pretty(&output)?);
+
+            write_ocr_sidecar(path, true, None, Some(&output))?;
+            Ok(())
+        }
+        Err(e) => {
+            let reason = format!("{e:#}");
+            write_ocr_sidecar(path, false, Some(&reason), None)?;
+            anyhow::bail!("OCR analysis failed for {path}: {reason}");
+        }
+    }
+}
+
+fn write_ocr_sidecar(
+    screenshot_path: &str,
+    succeeded: bool,
+    failure_reason: Option<&str>,
+    ocr_result: Option<&serde_json::Value>,
+) -> Result<()> {
+    let metadata = fs::metadata(screenshot_path)
+        .with_context(|| format!("failed to read screenshot metadata: {}", screenshot_path))?;
+    let screenshot_size = metadata.len();
+    let screenshot_modified = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .and_then(|d| chrono::DateTime::from_timestamp(d.as_secs() as i64, 0))
+        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let sidecar = serde_json::json!({
+        "provenance": {
+            "screenshot_path": screenshot_path,
+            "screenshot_size": screenshot_size,
+            "screenshot_modified": screenshot_modified,
+        },
+        "succeeded": succeeded,
+        "failure_reason": failure_reason,
+        "result": ocr_result,
+    });
+
+    let sidecar_path = format!("{}.ocr.json", screenshot_path);
+    fs::write(&sidecar_path, serde_json::to_string_pretty(&sidecar)?)
+        .with_context(|| format!("failed to write OCR sidecar: {}", sidecar_path))?;
+
+    Ok(())
 }
