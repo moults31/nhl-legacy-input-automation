@@ -264,14 +264,6 @@ fn run_log_step(cli: &Cli) -> Result<()> {
         .screenshot
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("--screenshot (path) is required"))?;
-    let prompt_file = cli
-        .prompt_file
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("--prompt-file is required"))?;
-    let response_file = cli
-        .response_file
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("--response-file is required"))?;
     let assessment = cli
         .assessment
         .as_ref()
@@ -319,199 +311,213 @@ fn run_log_step(cli: &Cli) -> Result<()> {
         anyhow::bail!("screenshot file does not exist: {}", screenshot);
     }
 
-    let prompt_text = fs::read_to_string(prompt_file)
-        .with_context(|| format!("failed to read prompt file: {prompt_file}"))?;
-
-    let banned_prompt_patterns: &[&str] = &[
-        "Look at this screenshot file",
-        "You are navigating the menu system",
-        "I am executing a task in",
-        "EXPECTS this screenshot to show",
-        "MATCH question",
-        "actual_screen_title",
-        r#"{"match":"#,
-        r#""match": true|false"#,
-    ];
-    for pattern in banned_prompt_patterns {
-        if prompt_text.contains(pattern) {
-            anyhow::bail!(
-                "vision prompt contains banned pattern: {:?}\n\
-                 The vision prompt must be the pure unified prompt from the skill — \
-                 no task context, no expected screen, no match question. \
-                 See SKILL.md §6 for the canonical template.",
-                pattern
-            );
-        }
-    }
-
-    // Validate the Screenshot: header line in the prompt. It must contain only
-    // a bare filename (NNN_step_N.png), not a directory path. Including the
-    // run_id directory in the path leaks task context to the vision model and
-    // causes hallucination.
-    for line in prompt_text.lines() {
-        if let Some(filename) = line.strip_prefix("Screenshot: ") {
-            let filename = filename.trim();
-            if filename.is_empty() {
-                anyhow::bail!(
-                    "vision prompt 'Screenshot:' header must specify a filename \
-                     (e.g. 'Screenshot: 001_step_001.png'), got: {:?}",
-                    line
-                );
-            }
-            if filename.contains('/') {
-                anyhow::bail!(
-                    "vision prompt 'Screenshot:' header must contain ONLY a bare \
-                     filename (e.g. 'Screenshot: 001_step_001.png'), not a full \
-                     path. Including a directory path leaks run_id context to the \
-                     vision model. Got: {:?}",
-                    filename
-                );
-            }
-            break;
-        }
-    }
-
     // Validate RUN_ID neutrality. Descriptive suffixes like _trade_mtl_tor
     // leak task context into directory names, which the vision model can
     // discover through the screenshot path in daemon_events.jsonl diagnostics.
     validate_run_id_neutral(run_id)?;
 
-    let response_text = fs::read_to_string(response_file)
-        .with_context(|| format!("failed to read response file: {response_file}"))?;
+    let is_vision = analysis_source == "vision_fallback";
 
-    let response_value: Value =
-        serde_json::from_str(&response_text).with_context(|| "response file is not valid JSON")?;
+    let (prompt_text, response_value) = if is_vision {
+        let prompt_file = cli.prompt_file.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("--prompt-file is required when --analysis-source is vision_fallback")
+        })?;
+        let prompt_text = fs::read_to_string(prompt_file)
+            .with_context(|| format!("failed to read prompt file: {prompt_file}"))?;
 
-    let required_fields: &[&str] = &[
-        "all_text",
-        "screen_title",
-        "layout",
-        "layout_description",
-        "options",
-        "selected",
-        "button_hints",
-        "gameplay",
-        "confidence",
-    ];
-    for field in required_fields {
-        if response_value.get(field).is_none() {
-            anyhow::bail!("vision response missing required field: {}", field);
-        }
-    }
-
-    // --- type validation ---
-
-    if !response_value["all_text"].is_array() {
-        anyhow::bail!("all_text must be an array");
-    }
-    for (i, v) in response_value["all_text"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .enumerate()
-    {
-        if !v.is_string() {
-            anyhow::bail!("all_text[{}] must be a string", i);
-        }
-    }
-
-    if !response_value["screen_title"].is_string() {
-        anyhow::bail!("screen_title must be a string");
-    }
-
-    if !response_value["layout_description"].is_string() {
-        anyhow::bail!("layout_description must be a string");
-    }
-
-    let valid_layouts = ["list", "two_column", "tabs", "grid", "custom"];
-    let layout = response_value["layout"].as_str().unwrap_or("");
-    if !valid_layouts.contains(&layout) {
-        anyhow::bail!("layout must be one of {:?}, got: {}", valid_layouts, layout);
-    }
-
-    if !response_value["options"].is_array() {
-        anyhow::bail!("options must be an array");
-    }
-    for (i, v) in response_value["options"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .enumerate()
-    {
-        if !v.is_string() {
-            anyhow::bail!("options[{}] must be a string", i);
-        }
-    }
-
-    if !response_value["selected"].is_string() {
-        anyhow::bail!("selected must be a string");
-    }
-
-    if !response_value["button_hints"].is_array() {
-        anyhow::bail!("button_hints must be an array");
-    }
-    for (i, v) in response_value["button_hints"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .enumerate()
-    {
-        if !v.is_string() {
-            anyhow::bail!("button_hints[{}] must be a string", i);
-        }
-    }
-
-    if !response_value["gameplay"].is_boolean() {
-        anyhow::bail!("gameplay must be a boolean");
-    }
-
-    let valid_confidences = ["high", "medium", "low"];
-    let confidence = response_value["confidence"].as_str().unwrap_or("");
-    if !valid_confidences.contains(&confidence) {
-        anyhow::bail!(
-            "confidence must be one of {:?}, got: {}",
-            valid_confidences,
-            confidence
-        );
-    }
-
-    // Optional breadcrumbs: if present, must be a string
-    if let Some(b) = response_value.get("breadcrumbs") {
-        if !b.is_string() {
-            anyhow::bail!("breadcrumbs must be a string if present");
-        }
-    }
-
-    // Optional regions: if present, must be an array of objects with string fields
-    if let Some(regions) = response_value.get("regions") {
-        if !regions.is_array() {
-            anyhow::bail!("regions must be an array if present");
-        }
-        for (i, region) in regions.as_array().unwrap().iter().enumerate() {
-            if !region.is_object() {
-                anyhow::bail!("regions[{}] must be an object", i);
+        let banned_prompt_patterns: &[&str] = &[
+            "Look at this screenshot file",
+            "You are navigating the menu system",
+            "I am executing a task in",
+            "EXPECTS this screenshot to show",
+            "MATCH question",
+            "actual_screen_title",
+            r#"{"match":"#,
+            r#""match": true|false"#,
+        ];
+        for pattern in banned_prompt_patterns {
+            if prompt_text.contains(pattern) {
+                anyhow::bail!(
+                    "vision prompt contains banned pattern: {:?}\n\
+                     The vision prompt must be the pure unified prompt from the skill — \
+                     no task context, no expected screen, no match question. \
+                     See SKILL.md §6 for the canonical template.",
+                    pattern
+                );
             }
-            for field in &["name", "options", "selected"] {
-                if region.get(field).is_none() {
-                    anyhow::bail!("regions[{}] missing required field: {}", i, field);
+        }
+
+        // Validate the Screenshot: header line in the prompt. It must contain only
+        // a bare filename (NNN_step_N.png), not a directory path. Including the
+        // run_id directory in the path leaks task context to the vision model and
+        // causes hallucination.
+        for line in prompt_text.lines() {
+            if let Some(filename) = line.strip_prefix("Screenshot: ") {
+                let filename = filename.trim();
+                if filename.is_empty() {
+                    anyhow::bail!(
+                        "vision prompt 'Screenshot:' header must specify a filename \
+                         (e.g. 'Screenshot: 001_step_001.png'), got: {:?}",
+                        line
+                    );
+                }
+                if filename.contains('/') {
+                    anyhow::bail!(
+                        "vision prompt 'Screenshot:' header must contain ONLY a bare \
+                         filename (e.g. 'Screenshot: 001_step_001.png'), not a full \
+                         path. Including a directory path leaks run_id context to the \
+                         vision model. Got: {:?}",
+                        filename
+                    );
+                }
+                break;
+            }
+        }
+
+        let response_file = cli.response_file.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("--response-file is required when --analysis-source is vision_fallback")
+        })?;
+        let response_text = fs::read_to_string(response_file)
+            .with_context(|| format!("failed to read response file: {response_file}"))?;
+
+        let response_value: Value = serde_json::from_str(&response_text)
+            .with_context(|| "response file is not valid JSON")?;
+
+        let required_fields: &[&str] = &[
+            "all_text",
+            "screen_title",
+            "layout",
+            "layout_description",
+            "options",
+            "selected",
+            "button_hints",
+            "gameplay",
+            "confidence",
+        ];
+        for field in required_fields {
+            if response_value.get(field).is_none() {
+                anyhow::bail!("vision response missing required field: {}", field);
+            }
+        }
+
+        // --- type validation ---
+
+        if !response_value["all_text"].is_array() {
+            anyhow::bail!("all_text must be an array");
+        }
+        for (i, v) in response_value["all_text"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+        {
+            if !v.is_string() {
+                anyhow::bail!("all_text[{}] must be a string", i);
+            }
+        }
+
+        if !response_value["screen_title"].is_string() {
+            anyhow::bail!("screen_title must be a string");
+        }
+
+        if !response_value["layout_description"].is_string() {
+            anyhow::bail!("layout_description must be a string");
+        }
+
+        let valid_layouts = ["list", "two_column", "tabs", "grid", "custom"];
+        let layout = response_value["layout"].as_str().unwrap_or("");
+        if !valid_layouts.contains(&layout) {
+            anyhow::bail!("layout must be one of {:?}, got: {}", valid_layouts, layout);
+        }
+
+        if !response_value["options"].is_array() {
+            anyhow::bail!("options must be an array");
+        }
+        for (i, v) in response_value["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+        {
+            if !v.is_string() {
+                anyhow::bail!("options[{}] must be a string", i);
+            }
+        }
+
+        if !response_value["selected"].is_string() {
+            anyhow::bail!("selected must be a string");
+        }
+
+        if !response_value["button_hints"].is_array() {
+            anyhow::bail!("button_hints must be an array");
+        }
+        for (i, v) in response_value["button_hints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+        {
+            if !v.is_string() {
+                anyhow::bail!("button_hints[{}] must be a string", i);
+            }
+        }
+
+        if !response_value["gameplay"].is_boolean() {
+            anyhow::bail!("gameplay must be a boolean");
+        }
+
+        let valid_confidences = ["high", "medium", "low"];
+        let confidence = response_value["confidence"].as_str().unwrap_or("");
+        if !valid_confidences.contains(&confidence) {
+            anyhow::bail!(
+                "confidence must be one of {:?}, got: {}",
+                valid_confidences,
+                confidence
+            );
+        }
+
+        // Optional breadcrumbs: if present, must be a string
+        if let Some(b) = response_value.get("breadcrumbs") {
+            if !b.is_string() {
+                anyhow::bail!("breadcrumbs must be a string if present");
+            }
+        }
+
+        // Optional regions: if present, must be an array of objects with string fields
+        if let Some(regions) = response_value.get("regions") {
+            if !regions.is_array() {
+                anyhow::bail!("regions must be an array if present");
+            }
+            for (i, region) in regions.as_array().unwrap().iter().enumerate() {
+                if !region.is_object() {
+                    anyhow::bail!("regions[{}] must be an object", i);
+                }
+                for field in &["name", "options", "selected"] {
+                    if region.get(field).is_none() {
+                        anyhow::bail!("regions[{}] missing required field: {}", i, field);
+                    }
+                }
+                if !region["name"].is_string() {
+                    anyhow::bail!("regions[{}].name must be a string", i);
+                }
+                if !region["options"].is_array() {
+                    anyhow::bail!("regions[{}].options must be an array", i);
+                }
+                if !region["selected"].is_string() {
+                    anyhow::bail!("regions[{}].selected must be a string", i);
+                }
+                for (j, opt) in region["options"].as_array().unwrap().iter().enumerate() {
+                    if !opt.is_string() {
+                        anyhow::bail!("regions[{}].options[{}] must be a string", i, j);
+                    }
                 }
             }
-            if !region["name"].is_string() {
-                anyhow::bail!("regions[{}].name must be a string", i);
-            }
-            if !region["options"].is_array() {
-                anyhow::bail!("regions[{}].options must be an array", i);
-            }
-            if !region["selected"].is_string() {
-                anyhow::bail!("regions[{}].selected must be a string", i);
-            }
-            for (j, opt) in region["options"].as_array().unwrap().iter().enumerate() {
-                if !opt.is_string() {
-                    anyhow::bail!("regions[{}].options[{}] must be a string", i, j);
-                }
-            }
         }
-    }
+
+        (Some(prompt_text), Some(response_value))
+    } else {
+        (None, None)
+    };
 
     // --- OCR provenance validation ---
 
@@ -581,15 +587,6 @@ fn run_log_step(cli: &Cli) -> Result<()> {
             if !succeeded {
                 anyhow::bail!("--analysis-source ocr requires OCR sidecar with succeeded=true");
             }
-            let has_ocr_source = response_value
-                .get("ocr_source")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            if !has_ocr_source {
-                anyhow::bail!(
-                    "--analysis-source ocr requires vision_response to have ocr_source: true"
-                );
-            }
             if let Some(result) = ocr_sidecar.get("result") {
                 let all_text = result
                     .get("all_text")
@@ -606,9 +603,19 @@ fn run_log_step(cli: &Cli) -> Result<()> {
                     );
                 }
             }
+            if prompt_text.is_some() {
+                anyhow::bail!(
+                    "--analysis-source ocr must not provide --prompt-file or --response-file. \
+                     OCR source means vision was not called."
+                );
+            }
         }
         "vision_fallback" => {
-            let has_ocr_source = response_value
+            let rv = response_value.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("internal error: response_value missing for vision_fallback")
+            })?;
+
+            let has_ocr_source = rv
                 .get("ocr_source")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
@@ -630,10 +637,9 @@ fn run_log_step(cli: &Cli) -> Result<()> {
                         .unwrap_or("");
                     let ocr_all_text = normalize_for_match(ocr_raw);
 
-                    let vision_title =
-                        match_normalize(response_value["screen_title"].as_str().unwrap_or(""));
+                    let vision_title = match_normalize(rv["screen_title"].as_str().unwrap_or(""));
 
-                    let vision_options: Vec<String> = response_value["options"]
+                    let vision_options: Vec<String> = rv["options"]
                         .as_array()
                         .map(|a| {
                             a.iter()
@@ -655,7 +661,10 @@ fn run_log_step(cli: &Cli) -> Result<()> {
                         options_found as f64 / vision_options.len() as f64
                     };
 
-                    if title_match && overlap >= 0.5 {
+                    // Either the screen title OR >=50% of options must be in OCR text.
+                    // Previously required both (AND), which missed splash screens
+                    // and single-button dialogs where options is empty (overlap=0.0).
+                    if title_match || overlap >= 0.5 {
                         anyhow::bail!(
                             "OCR was sufficient for this screen. \
                              Use --analysis-source ocr instead of vision_fallback.\n\
@@ -679,17 +688,22 @@ fn run_log_step(cli: &Cli) -> Result<()> {
         "screenshot_modified": actual_modified,
     });
 
-    let log_entry = serde_json::json!({
+    let mut log_entry = serde_json::json!({
         "step": step,
         "screenshot": screenshot,
-        "vision_prompt": prompt_text,
-        "vision_response": response_value,
         "assessment": assessment,
         "decision": decision,
         "plan": plan,
         "analysis_source": analysis_source,
         "ocr_provenance": ocr_provenance,
     });
+
+    if is_vision {
+        log_entry["vision_prompt"] =
+            serde_json::json!(prompt_text.expect("prompt_text must be set for vision"));
+        log_entry["vision_response"] =
+            serde_json::json!(response_value.expect("response_value must be set for vision"));
+    }
 
     let run_dir = PathBuf::from("screenshots").join(run_id);
     fs::create_dir_all(&run_dir)?;

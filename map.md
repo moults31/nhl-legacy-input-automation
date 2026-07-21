@@ -257,6 +257,14 @@ not in the trade screen.
 1. Press d-pad right to activate the right column
 2. Use LT/RT triggers to cycle the CPU-controlled team
 
+**Team rotation order (NHL, alphabetical by city):**
+Teams cycle in this order with RT (forward) and LT (backward):
+`ANA → BOS → BUF → CGY → CAR → CHI → COL → CBJ → DAL → DET → EDM → FLA → LAK → MIN → MTL → NSH → NJD → NYI → NYR → OTT → PHI → PIT → SJS → STL → TBL → TOR → VAN → WSH → WPG → (wraps to ANA)`
+
+To jump from team X to team Y, count the number of RT presses needed
+and batch them in a single `--send` command. Verify with OCR after the
+batch — do not screenshot after every individual press.
+
 **Player list controls:**
 - `A` select player, `B` back
 - `LB/RB` filter: All Skaters / Forwards / Defense / Goalies
@@ -464,7 +472,11 @@ is a **two-column layout** for swapping players between teams.
   back out to the Customize menu.
 - When entering Player Movement, the left panel defaults to the first NHL
   team (Anaheim Ducks) and the right panel defaults to Free Agents. Both
-  panels can be independently set to any league/team.
+   panels can be independently set to any league/team.
+
+- **Team rotation order (NHL, alphabetical by city):**
+  `ANA → BOS → BUF → CGY → CAR → CHI → COL → CBJ → DAL → DET → EDM → FLA → LAK → MIN → MTL → NSH → NJD → NYI → NYR → OTT → PHI → PIT → SJS → STL → TBL → TOR → VAN → WSH → WPG → (wraps)`
+  Batch RT/LT presses in a single `--send` command using `tap_trigger("rt", 500)` repeated N times, then verify with OCR.
 
 ## BE A GM MODE
 

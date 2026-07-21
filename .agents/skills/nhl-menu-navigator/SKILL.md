@@ -165,6 +165,13 @@ enforcement gate is active by default — no extra flags are needed.
 > **No screenshot is ever interpreted without a `menu-vision` response.**
 > If the `menu-vision` call fails or returns no valid JSON: **HALT.**
 > Do not send any inputs. Retry the vision call or report the failure.
+>
+> **Vision timeout policy:**
+> If the `menu-vision` subagent call takes > 90s, treat it as a transient
+> error. Retry once. If the retry also exceeds 90s: **HALT**. Do NOT block
+> silently for minutes — the OCR path may be sufficient for this screen.
+> After a vision timeout, check the OCR sidecar: if OCR has legible text,
+> log with `--analysis-source ocr` instead and proceed.
 
 The vision subagent is a **pure observer**. It receives no task context,
 no expected screen, no goal information. It catalogues what it sees and
@@ -397,6 +404,56 @@ The prompt sent to `menu-vision` is the exact unified vision prompt from §6
 with `Screenshot: _screenshot.png` (the daemon's `--watch` file). **No task
 context, no expected screen, no goal.**
 
+**MANDATORY — analysis source selection:**
+
+The agent MUST choose the analysis source BEFORE logging:
+
+| Source | When | Vision called? | Steps required |
+|--------|------|---------------|----------------|
+| `ocr` | Screen is in `map.md` AND OCR-A1/A2/A3 pass (§3b.0) | **NO** — omit Steps 1–2 below | Log with `--analysis-source ocr` |
+| `vision_fallback` | Screen NOT in `map.md`, OR OCR-A checks failed, OR screen is a first-launch dialog / gameplay / loading screen | **YES** — run Steps 1–3 below | Log with `--analysis-source vision_fallback` |
+
+**NEVER call vision when OCR suffices.** The tool enforces this: if you log
+with `vision_fallback` when OCR text already contains the screen title or
+≥50% of the options, `--log-step` will REJECT the entry and tell you to use
+`ocr` instead.
+
+**NEVER pass both `--prompt-file` and `--analysis-source ocr`.** The tool will
+REJECT this — OCR source means vision was not called, so there is no prompt
+or response to log.
+
+---
+
+**OCR path (no vision — preferred for mapped screens):**
+
+1. Run OCR on the screenshot:
+   ```bash
+   nhl-input --ocr screenshots/$RUN_ID/<NNN>_step_<N>.png
+   ```
+   This writes `screenshots/$RUN_ID/<NNN>_step_<N>.png.ocr.json`.
+
+2. Inspect the JSON output. Run OCR-A1, OCR-A2, OCR-A3 checks (§3b.0).
+
+3. If ALL checks pass: log with `--analysis-source ocr`. Omit `--prompt-file`
+   and `--response-file`:
+   ```bash
+   nhl-input --log-step \
+     --run-id "$RUN_ID" \
+     --step <N> \
+     --screenshot "screenshots/$RUN_ID/<NNN>_step_<N>.png" \
+     --ocr-file "screenshots/$RUN_ID/<NNN>_step_<N>.png.ocr.json" \
+     --analysis-source ocr \
+     --assessment goal_match \
+     --decision navigate \
+     --plan "<one-line summary>"
+   ```
+
+4. If ANY check fails: fall back to vision (see below).
+
+---
+
+**Vision-fallback path (only when OCR fails or screen is unfamiliar):**
+
 **Step 1 — write the exact vision prompt to a file:**
 
 ```bash
@@ -462,8 +519,10 @@ nhl-input --log-step \
   --run-id "$RUN_ID" \
   --step <N> \
   --screenshot "screenshots/$RUN_ID/<NNN>_step_<N>.png" \
+  --ocr-file "screenshots/$RUN_ID/<NNN>_step_<N>.png.ocr.json" \
   --prompt-file /tmp/nhl_prompt.txt \
   --response-file /tmp/nhl_response.txt \
+  --analysis-source vision_fallback \
   --assessment "<goal_match|goal_mismatch|inconsistent|recovery|halt>" \
   --decision "<navigate|recover|halt>" \
   --plan "<one-line summary of what input will be sent next and why>"
@@ -760,12 +819,17 @@ analysis paths, tried in this order:
 
 | Tier | Path | Cost | When to use |
 |------|------|------|-------------|
-| 0 | **OCR fast path** (`--ocr`) | <1s | Screens whose title exists in `map.md` |
-| 1 | **menu-vision** subagent | 60–120s | Fallback when Tier 0 fails; unfamiliar screens; first-launch dialogs |
+| 0 | **OCR fast path** (`--ocr`) | <1s | **DEFAULT.** Use for ALL screens whose title exists in `map.md`. This is your primary analysis method. |
+| 1 | **menu-vision** subagent | 60–120s | ONLY when Tier 0 fails; unfamiliar screens; first-launch dialogs; loading/gameplay screens |
+
+**Tier 0 is the DEFAULT.** You MUST try OCR on every screenshot. Only call
+`menu-vision` when OCR-A checks (§3b.0) actually fail, or when the screen is
+known to be non-textual (splash, loading, gameplay). The tool rejects
+`vision_fallback` log entries when OCR text already contains the answer.
 
 If BOTH Tier 0 AND Tier 1 fail on the same screenshot (OCR fails AND
 menu-vision returns invalid/unparseable) — do NOT send any input. HALT
-immediately. The loop is: INPUT → SCREENSHOT → (OCR then vision fallback)
+immediately. The loop is: INPUT → SCREENSHOT → OCR → (vision ONLY if OCR fails)
 → validation → log → next decision. **No valid analysis = no further inputs.**
 
 ### Step 3: Execution loop
@@ -1034,6 +1098,24 @@ For navigation within the task, follow this tight loop:
    does N sequential taps with a 200ms hold per press, pausing `delay_ms`
    between releases. Valid directions: `"dpad_up"` / `"up"`, `"dpad_down"` /
    `"down"`, `"dpad_left"` / `"left"`, `"dpad_right"` / `"right"`.
+
+   **IMPORTANT — team cycling on TRADE PLAYERS screen:**
+   The right-column team list cycles in alphabetical order by city:
+   ANA → BOS → BUF → CGY → CAR → CHI → COL → CBJ → DAL → DET → EDM →
+   FLA → LAK → MIN → MTL → NSH → NJD → NYI → NYR → OTT → PHI → PIT →
+   SJS → STL → TBL → TOR → VAN → WSH → WPG → (wraps back to ANA).
+   LT cycles backward. RB/LB switch leagues.
+
+   **Batch team cycling efficiently:** Instead of verifying after every
+   trigger press, compute the offset between the current team and the
+   target and batch ALL presses in a single `--send` command:
+   ```bash
+   # From ANA to TOR: ~25 RT presses forward
+   ./target/debug/nhl-input --send 'tap_trigger("rt", 500); wait(0.7); tap_trigger("rt", 500); wait(0.7); ... ; screenshot("step_N");'
+   ```
+   After the batch, run OCR and verify the correct team appears. If the
+   game dropped a press, re-adjust with the remaining offset (never more
+   than a few presses). **Do NOT screenshot after every single RT press.**
 
 5. **VERIFY**: Analyze the new screenshot. Same rules as CHECK:
    try OCR first for mapped screens, fall back to `menu-vision` if OCR
